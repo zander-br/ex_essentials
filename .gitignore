@@ -25,3 +25,6 @@ utilex-*.tar
 # Ignore Dialyzer PLT files
 /priv/plts/*.plt
 /priv/plts/*.plt.hash
+
+# Ignore ElixirLS files
+.elixir_ls
