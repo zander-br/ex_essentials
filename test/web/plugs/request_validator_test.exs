@@ -1,6 +1,7 @@
 defmodule Utilex.Web.Plugs.RequestValidatorTest do
   use ExUnit.Case
 
+  import Phoenix.ConnTest
   import Plug.Conn
   import Plug.Test
 
@@ -52,6 +53,25 @@ defmodule Utilex.Web.Plugs.RequestValidatorTest do
         |> RequestValidator.call(opts)
 
       assert conn.state == :unset
+    end
+
+    test "should return a conn with status :bad_request when the data is invalid",
+         %{opts: opts, params: params} do
+      invalid_params = Map.delete(params, "name")
+
+      conn =
+        conn(:post, "/api/users", invalid_params)
+        |> put_req_header("content-type", "application/json")
+        |> put_private(:phoenix_action, :create)
+        |> RequestValidator.call(opts)
+
+      assert ["application/problem+json"] == get_resp_header(conn, "content-type")
+
+      assert %{
+               "errors" => [%{"field" => "name", "reason" => "can't be blank"}],
+               "title" => "Your request parameters didn't validate.",
+               "type" => "https://example.net/validation_error"
+             } == json_response(conn, :bad_request)
     end
   end
 end
