@@ -30,7 +30,8 @@ defmodule Utilex.MixProject do
       {:jason, "~> 1.4"},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
-      {:sobelow, "~> 0.13", only: [:dev, :test], runtime: false}
+      {:sobelow, "~> 0.13", only: [:dev, :test], runtime: false},
+      {:phoenix, "~> 1.7", only: [:dev, :test], runtime: false}
     ]
   end
 end
