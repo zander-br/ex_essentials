@@ -28,6 +28,7 @@ defmodule Utilex.MixProject do
     [
       {:plug, "~> 1.15"},
       {:ecto, "~> 3.10"},
+      {:jason, "~> 1.4"},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
       {:sobelow, "~> 0.13", only: [:dev, :test], runtime: false}
