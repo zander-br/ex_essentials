@@ -42,5 +42,16 @@ defmodule Utilex.Web.Plugs.RequestValidatorTest do
 
       assert conn.state == :unset
     end
+
+    test "should return a conn with state :unset when validator does not have a validate function",
+         %{opts: opts, params: valid_params} do
+      conn =
+        conn(:post, "/api/users", valid_params)
+        |> put_req_header("content-type", "application/json")
+        |> put_private(:phoenix_action, :update)
+        |> RequestValidator.call(opts)
+
+      assert conn.state == :unset
+    end
   end
 end
