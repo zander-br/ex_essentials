@@ -28,6 +28,7 @@ defmodule Utilex.Web.Plugs.RequestValidatorTest do
 
   describe "call/2" do
     setup do
+      Application.delete_env(:utilex, :web_request_validator)
       opts = RequestValidator.init(validator: Users)
       params = %{"name" => "Joe Doe", "email" => "joe.doe@mail.com"}
       %{opts: opts, params: params}
@@ -72,6 +73,21 @@ defmodule Utilex.Web.Plugs.RequestValidatorTest do
                "title" => "Your request parameters didn't validate.",
                "type" => "https://example.net/validation_error"
              } == json_response(conn, :bad_request)
+    end
+
+    test "should return a conn with status :bad_request when the data is invalid and a custom error_title is configured",
+         %{opts: opts, params: params} do
+      Application.put_env(:utilex, :web_request_validator, error_title: "Validation error")
+
+      invalid_params = Map.delete(params, "name")
+
+      conn =
+        conn(:post, "/api/users", invalid_params)
+        |> put_req_header("content-type", "application/json")
+        |> put_private(:phoenix_action, :create)
+        |> RequestValidator.call(opts)
+
+      assert %{"title" => "Validation error"} = json_response(conn, :bad_request)
     end
   end
 end
