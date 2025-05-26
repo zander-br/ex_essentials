@@ -1,16 +1,16 @@
-defmodule Utilex.Web.Plugs.RequestValidatorTest do
+defmodule ExEssentials.Web.Plugs.RequestValidatorTest do
   use ExUnit.Case
 
   import Phoenix.ConnTest
   import Plug.Conn
   import Plug.Test
 
+  alias ExEssentials.Web.Plugs.RequestValidator
   alias Support.Validators.User, as: UserValidator
-  alias Utilex.Web.Plugs.RequestValidator
 
   describe "call/2" do
     setup do
-      Application.delete_env(:utilex, :web_request_validator)
+      Application.delete_env(:ex_essentials, :web_request_validator)
       opts = RequestValidator.init(validator: UserValidator)
 
       params = %{
@@ -98,7 +98,7 @@ defmodule Utilex.Web.Plugs.RequestValidatorTest do
 
     test "should return a conn with status :bad_request when the data is invalid and a custom error_code is configured",
          %{opts: opts, params: params} do
-      Application.put_env(:utilex, :web_request_validator, error_code: :validation_error)
+      Application.put_env(:ex_essentials, :web_request_validator, error_code: :validation_error)
 
       invalid_params = Map.delete(params, "name")
 
@@ -121,7 +121,7 @@ defmodule Utilex.Web.Plugs.RequestValidatorTest do
 
     test "should return a conn with status :bad_request when the data is invalid and a custom error_title is configured",
          %{opts: opts, params: params} do
-      Application.put_env(:utilex, :web_request_validator, error_title: "Validation request error")
+      Application.put_env(:ex_essentials, :web_request_validator, error_title: "Validation request error")
 
       invalid_params = Map.delete(params, "name")
 

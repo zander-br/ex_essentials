@@ -1,9 +1,9 @@
-defmodule Utilex.MixProject do
+defmodule ExEssentials.MixProject do
   use Mix.Project
 
   def project do
     [
-      app: :utilex,
+      app: :ex_essentials,
       version: "0.1.0",
       elixir: "~> 1.18",
       elixirc_paths: elixirc_paths(Mix.env()),
@@ -12,7 +12,11 @@ defmodule Utilex.MixProject do
       dialyzer: [
         plt_file: {:no_warn, "priv/plts/dialyzer.plt"},
         plt_add_apps: [:mix]
-      ]
+      ],
+      description: description(),
+      package: package(),
+      name: "ExEssentials",
+      source_url: "https://github.com/zander-br/ex_essentials"
     ]
   end
 
@@ -38,6 +42,20 @@ defmodule Utilex.MixProject do
       {:sobelow, "~> 0.13", only: [:dev, :test], runtime: false},
       {:phoenix, "~> 1.7", only: [:dev, :test], runtime: false},
       {:ex_doc, "~> 0.34", only: :dev, runtime: false}
+    ]
+  end
+
+  defp description do
+    "ExEssentials is a powerful utility library for Elixir that serves as a true toolbox — bringing together a collection of generic, reusable, and ready-to-use helpers to accelerate Elixir application development."
+  end
+
+  defp package do
+    [
+      maintainers: ["Anderson Santos"],
+      name: "ex_essentials",
+      files: ~w(lib .formatter.exs mix.exs README* LICENSE*),
+      licenses: ["Apache-2.0"],
+      links: %{"GitHub" => "https://github.com/zander-br/ex_essentials"}
     ]
   end
 end

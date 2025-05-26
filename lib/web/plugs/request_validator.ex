@@ -1,4 +1,4 @@
-defmodule Utilex.Web.Plugs.RequestValidator do
+defmodule ExEssentials.Web.Plugs.RequestValidator do
   @moduledoc """
   A `Plug` for validating request parameters using `Ecto.Changeset`.
 
@@ -90,7 +90,7 @@ defmodule Utilex.Web.Plugs.RequestValidator do
 
   You can plug the validator into your controller or router pipeline:
 
-      plug Utilex.Web.Plugs.RequestValidator, validator: MyAppWeb.Validators.User
+      plug ExEssentials.Web.Plugs.RequestValidator, validator: MyAppWeb.Validators.User
 
   ## Error Response Format
 
@@ -132,7 +132,7 @@ defmodule Utilex.Web.Plugs.RequestValidator do
   ## Configuration
   You can customize certain aspects via your `config.exs`:
 
-      config :utilex, :web_request_validator,
+      config :ex_essentials, :web_request_validator,
         json_library: Jason,
         error_code: :invalid_parameter,
         error_title: "Invalid request parameters"
@@ -279,5 +279,5 @@ defmodule Utilex.Web.Plugs.RequestValidator do
 
   defp get_json_encoder, do: Keyword.get(fetch_validator_config(), :json_library, Jason)
 
-  defp fetch_validator_config, do: Application.get_env(:utilex, :web_request_validator, [])
+  defp fetch_validator_config, do: Application.get_env(:ex_essentials, :web_request_validator, [])
 end
