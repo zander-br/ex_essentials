@@ -5,32 +5,24 @@ defmodule Utilex.Web.Plugs.RequestValidatorTest do
   import Plug.Conn
   import Plug.Test
 
+  alias Support.Validators.User, as: UserValidator
   alias Utilex.Web.Plugs.RequestValidator
-
-  defmodule Users do
-    use Ecto.Schema
-
-    import Ecto.Changeset
-
-    alias __MODULE__
-
-    schema "users" do
-      field(:name, :string)
-      field(:email, :string)
-    end
-
-    def create(params) do
-      %Users{}
-      |> cast(params, ~w(name email)a)
-      |> validate_required(~w(name email)a)
-    end
-  end
 
   describe "call/2" do
     setup do
       Application.delete_env(:utilex, :web_request_validator)
-      opts = RequestValidator.init(validator: Users)
-      params = %{"name" => "Joe Doe", "email" => "joe.doe@mail.com"}
+      opts = RequestValidator.init(validator: UserValidator)
+
+      params = %{
+        "courses" => [
+          %{"name" => "Elixir Types", "duration" => 30, "level" => "beginner"},
+          %{"name" => "Elixir Genserver", "duration" => 60, "level" => "advanced"}
+        ],
+        "email" => "joe.doe@mail.com",
+        "name" => "Joe Doe",
+        "preferences" => %{"theme" => "dark", "language" => "en"}
+      }
+
       %{opts: opts, params: params}
     end
 
@@ -58,7 +50,18 @@ defmodule Utilex.Web.Plugs.RequestValidatorTest do
 
     test "should return a conn with status :bad_request when the data is invalid",
          %{opts: opts, params: params} do
-      invalid_params = Map.delete(params, "name")
+      invalid_courses = [
+        %{"name" => "Elixir Types", "duration" => 30, "level" => "beginner"},
+        %{"name" => "Elixir Genserver", "duration" => 60, "level" => "hero"}
+      ]
+
+      invalid_preferences = %{"theme" => "bluedark"}
+
+      invalid_params =
+        params
+        |> Map.delete("name")
+        |> Map.put("preferences", invalid_preferences)
+        |> Map.put("courses", invalid_courses)
 
       conn =
         conn(:post, "/api/users", invalid_params)
@@ -73,6 +76,21 @@ defmodule Utilex.Web.Plugs.RequestValidatorTest do
                %{
                  "code" => "invalid_parameter",
                  "detail" => "The 'name' field can't be blank",
+                 "title" => "Invalid request parameters"
+               },
+               %{
+                 "code" => "invalid_parameter",
+                 "detail" => "The 'courses.[1].level' field is invalid",
+                 "title" => "Invalid request parameters"
+               },
+               %{
+                 "code" => "invalid_parameter",
+                 "detail" => "The 'preferences.language' field can't be blank",
+                 "title" => "Invalid request parameters"
+               },
+               %{
+                 "code" => "invalid_parameter",
+                 "detail" => "The 'preferences.theme' field is invalid",
                  "title" => "Invalid request parameters"
                }
              ] == errors
