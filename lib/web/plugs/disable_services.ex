@@ -116,7 +116,7 @@ defmodule ExEssentials.Web.Plugs.DisableServices do
       def call(conn = %Conn{private: %{phoenix_action: action}}, opts) do
         disabled_actions = Keyword.get(opts, :disabled_actions, [])
 
-        if flag_enabled?(conn, opts) && action in disabled_actions do
+        if action in disabled_actions && flag_enabled?(conn, opts) do
           conn
           |> send_resp(:service_unavailable, "Service Unavailable")
           |> halt()
@@ -145,7 +145,7 @@ defmodule ExEssentials.Web.Plugs.DisableServices do
   def call(conn = %Conn{private: %{phoenix_action: action}}, opts) do
     disabled_actions = Keyword.get(opts, :disabled_actions, [])
 
-    if flag_enabled?(conn, opts) && action in disabled_actions do
+    if action in disabled_actions && flag_enabled?(conn, opts) do
       conn
       |> send_resp(:service_unavailable, "Service Unavailable")
       |> halt()
