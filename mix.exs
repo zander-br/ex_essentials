@@ -4,7 +4,7 @@ defmodule ExEssentials.MixProject do
   def project do
     [
       app: :ex_essentials,
-      version: "0.2.3",
+      version: "0.2.4",
       elixir: "~> 1.12",
       elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
@@ -35,7 +35,7 @@ defmodule ExEssentials.MixProject do
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
-      {:plug, "~> 1.15"},
+      {:plug, ">= 1.14.0 and <= 1.18.0"},
       {:ecto, "~> 3.10"},
       {:jason, "~> 1.4"},
       {:fun_with_flags, ">= 1.11.0 and <= 1.13.0", optional: true},
