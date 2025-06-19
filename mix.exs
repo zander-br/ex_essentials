@@ -16,7 +16,8 @@ defmodule ExEssentials.MixProject do
       description: description(),
       package: package(),
       name: "ExEssentials",
-      source_url: "https://github.com/zander-br/ex_essentials"
+      source_url: "https://github.com/zander-br/ex_essentials",
+      aliases: aliases()
     ]
   end
 
@@ -37,6 +38,9 @@ defmodule ExEssentials.MixProject do
       {:plug, "~> 1.15"},
       {:ecto, "~> 3.10"},
       {:jason, "~> 1.4"},
+      {:fun_with_flags, "~> 1.13.0", optional: true},
+      {:ecto_sql, "~> 3.4", optional: true},
+      {:postgrex, ">= 0.0.0", optional: true},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
       {:sobelow, "~> 0.13", only: [:dev, :test], runtime: false},
@@ -56,6 +60,12 @@ defmodule ExEssentials.MixProject do
       files: ~w(lib .formatter.exs mix.exs README* LICENSE*),
       licenses: ["Apache-2.0"],
       links: %{"GitHub" => "https://github.com/zander-br/ex_essentials"}
+    ]
+  end
+
+  defp aliases do
+    [
+      test: ["ecto.drop --quiet", "ecto.create --quiet", "ecto.migrate --quiet", "test"]
     ]
   end
 end
