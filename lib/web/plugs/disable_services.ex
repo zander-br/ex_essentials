@@ -90,6 +90,8 @@ defmodule ExEssentials.Web.Plugs.DisableServices do
 
   import Plug.Conn
 
+  require Logger
+
   alias ExEssentials.Web.Plugs.DisableServices
   alias FunWithFlags.Group
   alias Plug.Conn
@@ -106,6 +108,8 @@ defmodule ExEssentials.Web.Plugs.DisableServices do
     quote do
       import Plug.Conn
 
+      require Logger
+
       alias ExEssentials.Web.Plugs.DisableServices
       alias Plug.Conn
 
@@ -113,10 +117,17 @@ defmodule ExEssentials.Web.Plugs.DisableServices do
 
       def init(opts), do: opts
 
-      def call(conn = %Conn{private: %{phoenix_action: action}}, opts) do
+      def call(conn, opts) do
+        %Conn{private: %{phoenix_action: action}, method: method, request_path: request_path} = conn
         disabled_actions = Keyword.get(opts, :disabled_actions, [])
+        current_user = get_current_user(conn)
+        user_info_log = if current_user, do: " Current user: #{current_user}", else: ""
 
         if action in disabled_actions && flag_enabled?(conn, opts) do
+          Logger.warning(
+            "Blocked request to #{method}: #{request_path} due to disabled action: #{action}.#{user_info_log}"
+          )
+
           conn
           |> send_resp(:service_unavailable, "Service Unavailable")
           |> halt()
@@ -142,10 +153,15 @@ defmodule ExEssentials.Web.Plugs.DisableServices do
 
   def init(opts), do: opts
 
-  def call(conn = %Conn{private: %{phoenix_action: action}}, opts) do
+  def call(conn, opts) do
+    %Conn{private: %{phoenix_action: action}, method: method, request_path: request_path} = conn
     disabled_actions = Keyword.get(opts, :disabled_actions, [])
+    current_user = get_current_user(conn)
+    user_info_log = if current_user, do: " Current user: #{current_user}", else: ""
 
     if action in disabled_actions && flag_enabled?(conn, opts) do
+      Logger.warning("Blocked request to #{method}: #{request_path} due to disabled action: #{action}.#{user_info_log}")
+
       conn
       |> send_resp(:service_unavailable, "Service Unavailable")
       |> halt()
