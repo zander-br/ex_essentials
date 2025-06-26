@@ -4,7 +4,7 @@ defmodule ExEssentials.MixProject do
   def project do
     [
       app: :ex_essentials,
-      version: "0.2.4",
+      version: "0.3.0",
       elixir: "~> 1.12",
       elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
@@ -39,6 +39,7 @@ defmodule ExEssentials.MixProject do
       {:ecto, "~> 3.10"},
       {:jason, "~> 1.4"},
       {:fun_with_flags, ">= 1.11.0 and <= 1.13.0", optional: true},
+      {:saxy, ">= 1.5.0 and <= 1.6.0", optional: true},
       {:ecto_sql, "~> 3.4", optional: true},
       {:postgrex, ">= 0.0.0", optional: true},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
