@@ -63,7 +63,7 @@ defmodule ExEssentials.Web.Plugs.NormalizeQueryParamsTest do
     end
 
     test "should return list when comma separated string is provided" do
-      conn = conn(:get, "/api/resource?status=open,closed", %{})
+      conn = conn(:get, "/api/resource?status=open%2Cclosed", %{})
       assert %Conn{query_params: query_params} = NormalizeQueryParams.call(conn, [])
       assert %{"status" => ["open", "closed"]} == query_params
     end

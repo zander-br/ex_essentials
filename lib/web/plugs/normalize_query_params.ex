@@ -49,9 +49,10 @@ defmodule ExEssentials.Web.Plugs.NormalizeQueryParams do
 
   @impl true
   def call(conn, _opts) do
-    %Conn{query_params: query_params} = conn
-    normalized = normalize(query_params)
-    %Conn{conn | query_params: normalized}
+    %Conn{body_params: body_params, query_params: query_params} = conn
+    query_params = normalize(query_params)
+    params = Map.merge(body_params, query_params)
+    %Conn{conn | query_params: query_params, params: params}
   end
 
   defp normalize(%{} = map), do: for({key, value} <- map, into: %{}, do: {key, normalize(value)})
