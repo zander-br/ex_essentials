@@ -43,10 +43,16 @@ defmodule ExEssentials.Web.Plugs.NormalizeQueryParamsTest do
       assert %{"pi" => 3.14} == query_params
     end
 
-    test "should return [] when list is provided" do
+    test "should return [] when empty list is provided" do
       conn = conn(:get, "/api/resource?list=[]", %{})
       assert %Conn{query_params: query_params} = NormalizeQueryParams.call(conn, [])
       assert %{"list" => []} == query_params
+    end
+
+    test "should return [] when list is provided" do
+      conn = conn(:get, "/api/resource?list=%5Bopen%2C1%2C3.14%2Ctrue%2Cfalse%5D", %{})
+      assert %Conn{query_params: query_params} = NormalizeQueryParams.call(conn, [])
+      assert %{"list" => ["open", 1, 3.14, true, false]} == query_params
     end
 
     test "should return %{} when empty map is provided" do

@@ -67,6 +67,7 @@ defmodule ExEssentials.Web.Plugs.NormalizeQueryParams do
     |> normalize_special_structures()
     |> normalize_number()
     |> normalize_map_like_structure()
+    |> normalize_list_like_structure()
     |> normalize_csv_list()
   end
 
@@ -111,6 +112,19 @@ defmodule ExEssentials.Web.Plugs.NormalizeQueryParams do
   end
 
   defp normalize_map_like_structure(value), do: value
+
+  defp normalize_list_like_structure("[" <> rest = original) do
+    if String.ends_with?(rest, "]") do
+      rest
+      |> String.trim_trailing("]")
+      |> String.split(~r/, ?/, trim: true)
+      |> Enum.map(&normalize/1)
+    else
+      original
+    end
+  end
+
+  defp normalize_list_like_structure(value), do: value
 
   defp normalize_csv_list(str) when is_binary(str) do
     if String.contains?(str, ",") do
