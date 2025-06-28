@@ -41,6 +41,18 @@ defmodule ExEssentials.XML do
   @spec processing_instruction(name :: String.t(), instruction :: String.t()) :: SaxyXML.processing_instruction()
   defdelegate processing_instruction(name, instruction), to: SaxyXML
 
+  @doc """
+  Builds a sanitized XML element ensuring all text nodes are properly escaped.
+
+  This function is a safe replacement for `Saxy.XML.element/3` that automatically escapes
+  special characters (`&`, `<`, `>`, `"`, `'`) in text nodes to produce well-formed XML.
+
+  ## Examples
+
+      iex> import ExEssentials.XML
+      iex> element_sanitize("note", [], ["<hello> & 'world'"])
+      {"note", [], ["&lt;hello&gt; &amp; &apos;world&apos;"]}
+  """
   @spec element_sanitize(term(), [{term(), term()}], term()) :: SaxyXML.element()
   def element_sanitize(name, attrs, children) do
     sanitized_children = sanitize_children(children)

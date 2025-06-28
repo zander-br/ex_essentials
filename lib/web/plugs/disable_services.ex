@@ -1,3 +1,14 @@
+mod_group = Module.concat([FunWithFlags, Group])
+
+with {:module, _} <- Code.ensure_compiled(mod_group) do
+  defimpl mod_group, for: ExEssentials.Web.Plugs.DisableServices do
+    def in?(%{current_user: current_user}, group_name) when is_binary(current_user),
+      do: current_user == group_name
+
+    def in?(_, _), do: false
+  end
+end
+
 defmodule ExEssentials.Web.Plugs.DisableServices do
   @moduledoc """
   A `Plug` that conditionally disables specific controller actions based on a feature flag,
@@ -93,7 +104,6 @@ defmodule ExEssentials.Web.Plugs.DisableServices do
   require Logger
 
   alias ExEssentials.Web.Plugs.DisableServices
-  alias FunWithFlags.Group
   alias Plug.Conn
 
   defstruct [:current_user]
@@ -197,18 +207,12 @@ defmodule ExEssentials.Web.Plugs.DisableServices do
     disable_service = %DisableServices{current_user: current_user}
     flag_name = Keyword.get(opts, :flag_name, @disable_services_default_flag_name)
     ensure_fun = Keyword.get(opts, :ensure_fun, &Code.ensure_loaded?/1)
+    feature_flags_module = Module.concat([FunWithFlags])
 
-    if ensure_fun.(FunWithFlags) do
-      FunWithFlags.enabled?(flag_name, for: disable_service)
+    if ensure_fun.(feature_flags_module) do
+      feature_flags_module.enabled?(flag_name, for: disable_service)
     else
       true
     end
-  end
-
-  defimpl Group, for: DisableServices do
-    def in?(%{current_user: current_user}, group_name) when is_binary(current_user),
-      do: current_user == group_name
-
-    def in?(_, _), do: false
   end
 end
