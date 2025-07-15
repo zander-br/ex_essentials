@@ -8,9 +8,9 @@ defmodule Support.Validators.Types.User.Course do
 
   @primary_key false
   embedded_schema do
-    field(:name, :string)
-    field(:duration, :integer)
-    field(:level, :string)
+    field :name, :string
+    field :duration, :integer
+    field :level, :string
   end
 
   def changeset(schema, params) do

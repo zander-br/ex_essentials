@@ -10,11 +10,11 @@ defmodule Support.Validators.User do
   @fields ~w(name email)a
 
   schema "users" do
-    field(:name, :string)
-    field(:email, :string)
+    field :name, :string
+    field :email, :string
 
-    embeds_one(:preferences, Preferences)
-    embeds_many(:courses, Course)
+    embeds_one :preferences, Preferences
+    embeds_many :courses, Course
   end
 
   def create(params) do
