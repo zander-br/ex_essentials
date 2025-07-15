@@ -48,7 +48,7 @@ defmodule ExEssentials.BrazilianDocument.Validator do
 
     Returns `true` if valid, `false` if invalid.
   """
-  @spec valid?(String.t()) :: boolean()
+  @spec valid?(document :: String.t()) :: boolean()
   def valid?(document) do
     cleaned = String.trim(document)
 
@@ -79,7 +79,7 @@ defmodule ExEssentials.BrazilianDocument.Validator do
         iex> ExEssentials.BrazilianDocument.Validator.cnpj_valid?("12ABC34501DE36")
         false
   """
-  @spec cnpj_valid?(String.t()) :: boolean()
+  @spec cnpj_valid?(cnpj :: String.t()) :: boolean()
   def cnpj_valid?(cnpj) when is_binary(cnpj) do
     if Regex.match?(@cnpj_alphanum_regex, cnpj) do
       cnpj_alphanum_valid?(cnpj)
@@ -103,7 +103,7 @@ defmodule ExEssentials.BrazilianDocument.Validator do
         iex> ExEssentials.BrazilianDocument.Validator.cpf_valid?("05859468091")
         true
   """
-  @spec cpf_valid?(String.t()) :: boolean()
+  @spec cpf_valid?(cpf :: String.t()) :: boolean()
   def cpf_valid?(cpf) when is_binary(cpf) do
     with digits when length(digits) == 11 <- extract_numeric_digits(cpf),
          false <- repeated_digits?(digits) do
