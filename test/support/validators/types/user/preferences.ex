@@ -9,8 +9,8 @@ defmodule Support.Validators.Types.User.Preferences do
 
   @primary_key false
   embedded_schema do
-    field(:theme, :string)
-    field(:language, :string)
+    field :theme, :string
+    field :language, :string
   end
 
   def changeset(schema, params) do
