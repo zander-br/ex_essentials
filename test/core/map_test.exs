@@ -81,6 +81,6 @@ defmodule ExEssentials.Core.MapTest do
     end
   end
 
-  defp atom_to_string(value) when is_atom(value), do: Atom.to_string(value)
-  defp atom_to_string(value), do: value
+  defp atom_to_string({_field, value}) when is_atom(value), do: Atom.to_string(value)
+  defp atom_to_string({_field, value}), do: value
 end

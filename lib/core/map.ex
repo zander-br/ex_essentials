@@ -21,7 +21,7 @@ defmodule ExEssentials.Core.Map do
         %{name: "Alice", years: 30}
   """
   def renake(map, keys) when is_map(map) and is_list(keys),
-    do: renake(map, keys, fn value -> value end)
+    do: renake(map, keys, fn {_field, value} -> value end)
 
   @doc """
     Like `renake/2`, but applies a transformation function to each value before inserting it into the resulting map.
@@ -29,7 +29,7 @@ defmodule ExEssentials.Core.Map do
     ## Examples
 
         iex> map = %{price: 100, discount: 10}
-        iex> ExEssentials.Core.Map.renake(map, [:price, discount: :off], &(&1 * 2))
+        iex> ExEssentials.Core.Map.renake(map, [:price, discount: :off], fn {_field, value} -> value * 2 end)
         %{price: 200, off: 20}
   """
   def renake(map, keys, transform_fn) when is_map(map) and is_list(keys),
@@ -87,7 +87,7 @@ defmodule ExEssentials.Core.Map do
         renamed_map
 
       value ->
-        transformed_value = transform_fn.(value)
+        transformed_value = transform_fn.({to, value})
         Map.put(renamed_map, to, transformed_value)
     end
   end
@@ -98,7 +98,7 @@ defmodule ExEssentials.Core.Map do
         renamed_map
 
       value ->
-        transformed_value = transform_fn.(value)
+        transformed_value = transform_fn.({key, value})
         Map.put(renamed_map, key, transformed_value)
     end
   end
