@@ -84,7 +84,7 @@ defmodule ExEssentials.Core.Map do
   defp rename_key({from, to}, renamed_map, original_map, transform_fn) do
     case Map.get(original_map, from) do
       nil ->
-        renamed_map
+        Map.put(renamed_map, to, nil)
 
       value ->
         transformed_value = transform_fn.({to, value})
@@ -95,7 +95,7 @@ defmodule ExEssentials.Core.Map do
   defp rename_key(key, renamed_map, original_map, transform_fn) do
     case Map.get(original_map, key) do
       nil ->
-        renamed_map
+        Map.put(renamed_map, key, nil)
 
       value ->
         transformed_value = transform_fn.({key, value})
