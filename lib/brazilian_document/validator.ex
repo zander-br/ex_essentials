@@ -50,7 +50,10 @@ defmodule ExEssentials.BrazilianDocument.Validator do
   """
   @spec valid?(document :: String.t()) :: boolean()
   def valid?(document) do
-    cleaned = String.trim(document)
+    cleaned =
+      document
+      |> String.trim()
+      |> String.replace(~r/\D/, "")
 
     cond do
       String.length(cleaned) == 11 -> cpf_valid?(cleaned)
