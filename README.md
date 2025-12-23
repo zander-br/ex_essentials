@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
     <source srcset="https://raw.githubusercontent.com/zander-br/ex_essentials/main/assets/ex_essentials.png">
-    <img alt="Oban logo" src="https://raw.githubusercontent.com/zander-br/ex_essentials/main/assets/ex_essentials.png" width="320">
+    <img alt="ExEssentials logo" src="https://raw.githubusercontent.com/zander-br/ex_essentials/main/assets/ex_essentials.png" width="320">
   </picture>
 </p>
 
@@ -21,7 +21,7 @@ by adding `ex_essentials` to your list of dependencies in `mix.exs`:
 ```elixir
 def deps do
   [
-    {:ex_essentials, "~> 0.7.1"}
+    {:ex_essentials, "~> 0.8.0"}
   ]
 end
 ```
