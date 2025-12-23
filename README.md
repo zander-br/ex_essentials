@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
     <source srcset="https://raw.githubusercontent.com/zander-br/ex_essentials/main/assets/ex_essentials.png">
-    <img alt="Oban logo" src="https://raw.githubusercontent.com/zander-br/ex_essentials/main/assets/ex_essentials.png" width="320">
+    <img alt="ExEssentials logo" src="https://raw.githubusercontent.com/zander-br/ex_essentials/main/assets/ex_essentials.png" width="320">
   </picture>
 </p>
 
