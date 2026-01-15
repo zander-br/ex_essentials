@@ -168,6 +168,84 @@ defmodule ExEssentials.Core.Runner do
   end
 
   @doc """
+  Continues the runner pipeline by applying `fun` to the current runner.
+
+  This is useful to keep composing steps without calling `finish/2` in the middle
+  of the pipeline.
+
+  If the runner is already marked as failed, this function returns the runner unchanged.
+
+  ## Examples
+
+      iex> ExEssentials.Core.Runner.new()
+      ...> |> ExEssentials.Core.Runner.put(:a, 1)
+      ...> |> ExEssentials.Core.Runner.then(fn r -> ExEssentials.Core.Runner.put(r, :b, 2) end)
+      ...> |> ExEssentials.Core.Runner.finish(fn result -> result end)
+      {:ok, %{a: 1, b: 2}}
+  """
+  @spec then(runner :: t(), fun :: (t() -> t())) :: t()
+  def then(runner = %Runner{failed?: true}, _fun), do: runner
+
+  def then(runner = %Runner{}, fun) when is_function(fun, 1),
+    do: fun.(runner)
+
+  @doc """
+  Conditionally continues the runner pipeline.
+
+  `predicate` receives the current `changes` map and must return a boolean.
+  When `predicate` returns `true`, `on_true` is executed receiving the current runner.
+  When `predicate` returns `false`, the runner is returned unchanged.
+
+  If the runner is already marked as failed, this function returns the runner unchanged.
+
+  ## Examples
+
+      iex> ExEssentials.Core.Runner.new()
+      ...> |> ExEssentials.Core.Runner.put(:status, :rejected)
+      ...> |> ExEssentials.Core.Runner.branch(
+      ...>   fn %{status: status} -> status == :rejected end,
+      ...>   fn r -> ExEssentials.Core.Runner.put(r, :compensation, :done) end
+      ...> )
+      ...> |> ExEssentials.Core.Runner.finish(fn result -> result end)
+      {:ok, %{status: :rejected, compensation: :done}}
+  """
+  @spec branch(runner :: t(), predicate :: (map() -> boolean()), on_true :: (t() -> t())) :: t()
+  def branch(runner = %Runner{failed?: true}, _predicate, _on_true), do: runner
+
+  def branch(runner = %Runner{changes: changes}, predicate, on_true)
+      when is_function(predicate, 1) and is_function(on_true, 1) do
+    if predicate.(changes), do: on_true.(runner), else: runner
+  end
+
+  @doc """
+  Selects the next continuation based on the current `changes`.
+
+  The given function must return a continuation function `(runner -> runner)`.
+  This enables pattern-matching on `changes` while keeping the pipeline linear.
+
+  If the runner is already marked as failed, this function returns the runner unchanged.
+
+  ## Examples
+
+      iex> ExEssentials.Core.Runner.new()
+      ...> |> ExEssentials.Core.Runner.put(:status, :settled)
+      ...> |> ExEssentials.Core.Runner.switch(fn
+      ...>   %{status: :settled} -> fn r -> ExEssentials.Core.Runner.put(r, :final, :ok) end
+      ...>   _ -> fn r -> ExEssentials.Core.Runner.put(r, :final, :error) end
+      ...> end)
+      ...> |> ExEssentials.Core.Runner.finish(fn result -> result end)
+      {:ok, %{status: :settled, final: :ok}}
+  """
+  @spec switch(runner :: t(), selector :: (map() -> (t() -> t()))) :: t()
+  def switch(runner = %Runner{failed?: true}, _selector), do: runner
+
+  def switch(runner = %Runner{changes: changes}, selector)
+      when is_function(selector, 1) do
+    continuation = selector.(changes)
+    continuation.(runner)
+  end
+
+  @doc """
     Finalizes the flow and returns the output of `function`.
 
     This function awaits any pending async tasks (subject to the runner's `:timeout`) and then calls
