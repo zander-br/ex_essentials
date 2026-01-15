@@ -21,7 +21,7 @@ by adding `ex_essentials` to your list of dependencies in `mix.exs`:
 ```elixir
 def deps do
   [
-    {:ex_essentials, "~> 0.8.0"}
+    {:ex_essentials, "~> 0.8.1"}
   ]
 end
 ```
