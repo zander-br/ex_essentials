@@ -117,11 +117,15 @@ defmodule ExEssentials.Core.Runner do
     * `{:put, name, value}` - seeds a value
     * `{:sync, name, fun}` - runs synchronously
     * `{:async, name, fun}` - runs concurrently
+    * `{:branch, predicate, on_true}` - conditionally injects more steps at runtime
+    * `{:switch, selector}` - injects more steps at runtime based on `changes`
   """
   @type step ::
           {:put, step :: atom(), value :: any()}
           | {:sync, step :: atom(), (map() -> {:ok, any()} | {:error, any()})}
           | {:async, step :: atom(), (map() -> {:ok, any()} | {:error, any()})}
+          | {:branch, predicate :: (map() -> boolean()), on_true :: (Runner.t() -> Runner.t())}
+          | {:switch, selector :: (map() -> (Runner.t() -> Runner.t()))}
 
   @typedoc """
   The runner struct.
@@ -228,7 +232,6 @@ defmodule ExEssentials.Core.Runner do
   def run(runner = %Runner{steps: steps}, step_name, function)
       when is_function(function, 1) and is_atom(step_name) do
     validate_unique_step!(runner, step_name)
-
     steps = steps ++ [{:sync, step_name, function}]
     %Runner{runner | steps: steps}
   end
@@ -263,7 +266,6 @@ defmodule ExEssentials.Core.Runner do
   def run_async(runner = %Runner{steps: steps}, step_name, function)
       when is_function(function, 1) and is_atom(step_name) do
     validate_unique_step!(runner, step_name)
-
     steps = steps ++ [{:async, step_name, function}]
     %Runner{runner | steps: steps}
   end
@@ -294,7 +296,7 @@ defmodule ExEssentials.Core.Runner do
   @doc """
   Conditionally applies `on_true` when `predicate` evaluates to `true`.
 
-  The predicate is evaluated using the current `runner.changes`.
+  The predicate is evaluated at runtime during `finish/1`, using the current `changes` map.
 
   ## Examples
 
@@ -306,8 +308,8 @@ defmodule ExEssentials.Core.Runner do
           fn r -> ExEssentials.Core.Runner.put(r, :compensate, true) end
         )
 
-      runner.changes
-      #=> %{status: :rejected, compensate: true}
+      ExEssentials.Core.Runner.finish(runner)
+      #=> {:ok, %{status: :rejected, compensate: true}}
 
   """
   @spec branch(
@@ -317,13 +319,14 @@ defmodule ExEssentials.Core.Runner do
         ) :: Runner.t()
   def branch(runner = %Runner{failed?: true}, _predicate, _on_true), do: runner
 
-  def branch(runner = %Runner{changes: changes}, predicate, on_true)
+  def branch(runner = %Runner{steps: steps}, predicate, on_true)
       when is_function(predicate, 1) and is_function(on_true, 1) do
-    if predicate.(changes), do: on_true.(runner), else: runner
+    steps = steps ++ [{:branch, predicate, on_true}]
+    %Runner{runner | steps: steps}
   end
 
   @doc """
-  Selects and applies a continuation based on the current `runner.changes`.
+  Selects and applies a continuation at runtime during `finish/1`, based on the current `changes` map.
 
   The selector must return a function that receives the runner.
 
@@ -337,8 +340,8 @@ defmodule ExEssentials.Core.Runner do
           _ -> fn r -> ExEssentials.Core.Runner.put(r, :final, :error) end
         end)
 
-      runner.changes
-      #=> %{status: :settled, final: :ok}
+      ExEssentials.Core.Runner.finish(runner)
+      #=> {:ok, %{status: :settled, final: :ok}}
 
   """
   @spec switch(
@@ -347,9 +350,9 @@ defmodule ExEssentials.Core.Runner do
         ) :: Runner.t()
   def switch(runner = %Runner{failed?: true}, _selector), do: runner
 
-  def switch(runner = %Runner{changes: changes}, selector) when is_function(selector, 1) do
-    continuation = selector.(changes)
-    continuation.(runner)
+  def switch(runner = %Runner{steps: steps}, selector) when is_function(selector, 1) do
+    steps = steps ++ [{:switch, selector}]
+    %Runner{runner | steps: steps}
   end
 
   @doc """
@@ -402,12 +405,38 @@ defmodule ExEssentials.Core.Runner do
   end
 
   defp execute_flow(%Runner{steps: steps, changes: seed_changes, timeout: timeout}) do
-    initial = %{changes: seed_changes, pending_async: [], timeout: timeout}
-
-    steps
-    |> Enum.reduce_while(initial, &reduce_step/2)
-    |> finalize_flow()
+    acc = %{changes: seed_changes, pending_async: [], timeout: timeout}
+    execute_steps(steps, acc)
   end
+
+  defp execute_steps([], acc), do: finalize_flow(acc)
+
+  defp execute_steps([step | rest], acc) do
+    step
+    |> reduce_step(acc)
+    |> handle_execute_step_result(rest)
+  end
+
+  defp handle_execute_step_result({:cont, acc2}, rest),
+    do: execute_steps(rest, acc2)
+
+  defp handle_execute_step_result({:inject, injected_steps, acc2}, rest),
+    do: handle_execute_injection(injected_steps, acc2, rest)
+
+  defp handle_execute_step_result({:halt, error}, _rest),
+    do: error
+
+  defp handle_execute_injection(injected_steps, acc2, rest) do
+    injected_steps
+    |> validate_injected_steps(rest, acc2.changes)
+    |> handle_injection_validation(injected_steps, acc2, rest)
+  end
+
+  defp handle_injection_validation(:ok, injected_steps, acc2, rest),
+    do: execute_steps(injected_steps ++ rest, acc2)
+
+  defp handle_injection_validation({:error, error}, _injected_steps, _acc2, _rest),
+    do: error
 
   defp reduce_step({:async, step_name, fun}, acc),
     do: {:cont, enqueue_async(acc, step_name, fun)}
@@ -417,6 +446,60 @@ defmodule ExEssentials.Core.Runner do
 
   defp reduce_step({:sync, step_name, fun}, acc),
     do: handle_sync_step(acc, step_name, fun)
+
+  defp reduce_step({:branch, predicate, on_true}, acc),
+    do: handle_branch_step(acc, predicate, on_true)
+
+  defp reduce_step({:switch, selector}, acc),
+    do: handle_switch_step(acc, selector)
+
+  defp handle_branch_step(acc, predicate, on_true) do
+    acc
+    |> flush_pending_async()
+    |> handle_branch_flush_result(predicate, on_true)
+  end
+
+  defp handle_branch_flush_result({:ok, acc2}, predicate, on_true),
+    do: handle_branch_decision(predicate.(acc2.changes), acc2, on_true)
+
+  defp handle_branch_flush_result({:error, step, reason, changes_before}, _predicate, _on_true),
+    do: {:halt, {:error, step, reason, changes_before}}
+
+  defp handle_branch_decision(true, acc2, on_true),
+    do: inject_branch_steps(acc2, on_true)
+
+  defp handle_branch_decision(false, acc2, _on_true),
+    do: {:cont, acc2}
+
+  defp inject_branch_steps(acc2, on_true) do
+    injected_runner = build_injected_runner(acc2, on_true)
+    {:inject, injected_runner.steps, %{acc2 | changes: injected_runner.changes}}
+  end
+
+  defp handle_switch_step(acc, selector) do
+    case flush_pending_async(acc) do
+      {:ok, acc2} ->
+        continuation = selector.(acc2.changes)
+        injected_runner = build_injected_runner(acc2, continuation)
+        {:inject, injected_runner.steps, %{acc2 | changes: injected_runner.changes}}
+
+      {:error, step, reason, changes_before} ->
+        {:halt, {:error, step, reason, changes_before}}
+    end
+  end
+
+  defp build_injected_runner(%{changes: changes, timeout: timeout}, fun) do
+    runner = %Runner{
+      steps: [],
+      changes: changes,
+      failed?: false,
+      error_reason: nil,
+      failed_step: nil,
+      timeout: timeout
+    }
+
+    fun.(runner)
+  end
 
   defp handle_put_step(acc, step_name, value) do
     case flush_pending_async(acc) do
@@ -434,9 +517,6 @@ defmodule ExEssentials.Core.Runner do
         {:halt, {:error, step, reason, changes_before}}
     end
   end
-
-  defp finalize_flow(error = {:error, _step, _reason, _changes_before}),
-    do: error
 
   defp finalize_flow(%{pending_async: [], changes: changes}),
     do: {:ok, changes}
@@ -478,7 +558,8 @@ defmodule ExEssentials.Core.Runner do
   defp execute_async_item({step_name, fun, snapshot_changes}),
     do: {step_name, fun.(snapshot_changes)}
 
-  defp clear_pending_async(acc), do: %{acc | pending_async: []}
+  defp clear_pending_async(acc),
+    do: %{acc | pending_async: []}
 
   defp merge_async_results(results, acc),
     do: Enum.reduce_while(results, {:ok, acc}, &merge_async_results_reduce/2)
@@ -515,4 +596,40 @@ defmodule ExEssentials.Core.Runner do
 
   defp step_name_matches?({_type, step_name, _value_or_fun}, compare_step_name),
     do: step_name == compare_step_name
+
+  defp validate_injected_steps(injected_steps, remaining_steps, changes_before) do
+    injected_names = collect_step_names(injected_steps)
+    remaining_names = collect_step_names(remaining_steps)
+
+    case duplicated_name(injected_names, remaining_names) do
+      nil -> :ok
+      name -> {:error, {:error, :runner, {:duplicated_step_name, name}, changes_before}}
+    end
+  end
+
+  defp collect_step_names(steps), do: collect_step_names(steps, [])
+
+  defp collect_step_names([], acc), do: Enum.reverse(acc)
+
+  defp collect_step_names([step | rest], acc) do
+    case injected_step_name(step) do
+      nil -> collect_step_names(rest, acc)
+      name -> collect_step_names(rest, [name | acc])
+    end
+  end
+
+  defp injected_step_name({:put, name, _}), do: name
+  defp injected_step_name({:sync, name, _}), do: name
+  defp injected_step_name({:async, name, _}), do: name
+  defp injected_step_name(_), do: nil
+
+  defp duplicated_name(injected_names, remaining_names) do
+    injected_set = MapSet.new(injected_names)
+    find_duplicate(remaining_names, injected_set)
+  end
+
+  defp find_duplicate([], _set), do: nil
+
+  defp find_duplicate([name | rest], set),
+    do: if(MapSet.member?(set, name), do: name, else: find_duplicate(rest, set))
 end

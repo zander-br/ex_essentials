@@ -88,57 +88,38 @@ defmodule ExEssentials.Core.RunnerTest do
   end
 
   describe "branch/3" do
-    test "should return updated runner when predicate is true" do
-      runner = %Runner{changes: %{status: :rejected}}
+    test "should return updated runner when runner is not failed" do
+      runner = Runner.new()
+      predicate = &predicate_rejected?/1
+      on_true = &continuation_add_compensation/1
 
-      predicate = fn %{status: s} -> s == :rejected end
-      func = fn runner -> %Runner{runner | changes: Map.put(runner.changes, :compensation, :done)} end
-
-      assert %Runner{changes: changes} = Runner.branch(runner, predicate, func)
-      assert %{status: :rejected, compensation: :done} == changes
-    end
-
-    test "should return same runner when predicate is false" do
-      runner = %Runner{changes: %{status: :settled}}
-      predicate = fn %{status: s} -> s == :rejected end
-      func = fn runner -> %Runner{runner | changes: Map.put(runner.changes, :compensation, :done)} end
-      assert %Runner{changes: changes} = Runner.branch(runner, predicate, func)
-      assert %{status: :settled} == changes
+      assert %Runner{steps: steps, failed?: false} = Runner.branch(runner, predicate, on_true)
+      assert [{:branch, ^predicate, ^on_true}] = steps
     end
 
     test "should return same runner when runner is failed" do
       runner = %Runner{failed?: true, changes: %{status: :rejected}}
-      predicate = fn _ -> true end
-      func = fn runner -> %Runner{runner | changes: Map.put(runner.changes, :compensation, :done)} end
-      assert %Runner{failed?: true, changes: %{status: :rejected}} == Runner.branch(runner, predicate, func)
+      predicate = &predicate_rejected?/1
+      on_true = &continuation_add_compensation/1
+      assert %Runner{failed?: true, changes: %{status: :rejected}} == Runner.branch(runner, predicate, on_true)
     end
   end
 
   describe "switch/2" do
-    test "should return updated runner when selector returns a continuation" do
-      runner = %Runner{changes: %{status: :settled}}
+    test "should return updated runner when runner is not failed" do
+      runner = Runner.new()
+      selector = &select_final_continuation/1
 
-      selector =
-        fn
-          %{status: :settled} -> &set_final_ok/1
-          _ -> &set_final_error/1
-        end
-
-      assert %Runner{changes: changes} = Runner.switch(runner, selector)
-      assert %{status: :settled, final: :ok} == changes
+      assert %Runner{steps: steps, failed?: false} = Runner.switch(runner, selector)
+      assert [{:switch, ^selector}] = steps
     end
 
     test "should return same runner when runner is failed" do
       runner = %Runner{failed?: true, changes: %{status: :settled}}
-      selector = fn _ -> &set_final_ok/1 end
+      selector = &select_final_continuation/1
+
       assert %Runner{failed?: true, changes: %{status: :settled}} == Runner.switch(runner, selector)
     end
-
-    defp set_final_ok(runner = %Runner{}),
-      do: %Runner{runner | changes: Map.put(runner.changes, :final, :ok)}
-
-    defp set_final_error(runner = %Runner{}),
-      do: %Runner{runner | changes: Map.put(runner.changes, :final, :error)}
   end
 
   describe "finish/1" do
@@ -246,4 +227,19 @@ defmodule ExEssentials.Core.RunnerTest do
 
   defp assert_runner_result(runner_result, expected_result),
     do: assert(runner_result == expected_result)
+
+  defp predicate_rejected?(%{status: status}), do: status == :rejected
+  defp predicate_rejected?(_changes), do: false
+
+  defp continuation_add_compensation(%Runner{} = runner),
+    do: Runner.put(runner, :compensation, :done)
+
+  defp select_final_continuation(%{status: :settled}), do: &set_final_ok/1
+  defp select_final_continuation(_changes), do: &set_final_error/1
+
+  defp set_final_ok(%Runner{} = runner),
+    do: %Runner{runner | changes: Map.put(runner.changes, :final, :ok)}
+
+  defp set_final_error(%Runner{} = runner),
+    do: %Runner{runner | changes: Map.put(runner.changes, :final, :error)}
 end
