@@ -171,7 +171,7 @@ defmodule ExEssentials.Web.Plugs.RequestValidator do
     end
   end
 
-  defp run_validate(%Conn{private: private, params: params} = conn, validator) do
+  defp run_validate(conn = %Conn{private: private, params: params}, validator) do
     action = Map.get(private, :phoenix_action)
 
     if function_exported?(validator, action, @validator_arity) do
@@ -196,7 +196,7 @@ defmodule ExEssentials.Web.Plugs.RequestValidator do
     |> halt()
   end
 
-  defp traverse_and_format_errors(%Changeset{changes: changes} = changeset) do
+  defp traverse_and_format_errors(changeset = %Changeset{changes: changes}) do
     changeset
     |> Changeset.traverse_errors(&interpolate_error_placeholders/1)
     |> transform_errors_to_response_format(changes)

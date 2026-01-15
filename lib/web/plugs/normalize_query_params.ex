@@ -55,7 +55,7 @@ defmodule ExEssentials.Web.Plugs.NormalizeQueryParams do
     %Conn{conn | query_params: query_params, params: params}
   end
 
-  defp normalize(%{} = map), do: for({key, value} <- map, into: %{}, do: {key, normalize(value)})
+  defp normalize(map = %{}), do: for({key, value} <- map, into: %{}, do: {key, normalize(value)})
   defp normalize([head | tail]), do: [normalize(head) | normalize(tail)]
   defp normalize([]), do: []
 
@@ -99,7 +99,7 @@ defmodule ExEssentials.Web.Plugs.NormalizeQueryParams do
 
   defp normalize_number(value), do: value
 
-  defp normalize_map_like_structure("{" <> rest = original) do
+  defp normalize_map_like_structure(original = "{" <> rest) do
     if String.ends_with?(rest, "}") do
       rest
       |> String.trim_trailing("}")
@@ -113,7 +113,7 @@ defmodule ExEssentials.Web.Plugs.NormalizeQueryParams do
 
   defp normalize_map_like_structure(value), do: value
 
-  defp normalize_list_like_structure("[" <> rest = original) do
+  defp normalize_list_like_structure(original = "[" <> rest) do
     if String.ends_with?(rest, "]") do
       rest
       |> String.trim_trailing("]")
