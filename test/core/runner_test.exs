@@ -142,6 +142,71 @@ defmodule ExEssentials.Core.RunnerTest do
     end
   end
 
+  describe "then/2" do
+    test "should return updated runner when it is not failed" do
+      runner =
+        Runner.new()
+        |> Runner.put(:a, 1)
+        |> Runner.then(fn r -> Runner.put(r, :b, 2) end)
+
+      assert runner.changes == %{a: 1, b: 2}
+    end
+
+    test "should return the same runner when it fails previously" do
+      runner = %Runner{failed?: true, changes: %{a: 1}}
+
+      result = Runner.then(runner, fn r -> Runner.put(r, :b, 2) end)
+
+      assert result == runner
+    end
+  end
+
+  describe "branch/3" do
+    test "should return updated runner when predicate is true" do
+      runner =
+        Runner.new()
+        |> Runner.put(:status, :rejected)
+        |> Runner.branch(fn %{status: s} -> s == :rejected end, fn r -> Runner.put(r, :compensation, :done) end)
+
+      assert runner.changes == %{status: :rejected, compensation: :done}
+    end
+
+    test "should return the same runner when predicate is false" do
+      runner =
+        Runner.new()
+        |> Runner.put(:status, :settled)
+        |> Runner.branch(fn %{status: s} -> s == :rejected end, fn r -> Runner.put(r, :compensation, :done) end)
+
+      assert runner.changes == %{status: :settled}
+    end
+
+    test "should return the same runner when it fails previously" do
+      runner = %Runner{failed?: true, changes: %{status: :rejected}}
+      result = Runner.branch(runner, fn _ -> true end, fn r -> Runner.put(r, :compensation, :done) end)
+      assert result == runner
+    end
+  end
+
+  describe "switch/2" do
+    test "should return updated runner when selecting a continuation" do
+      runner =
+        Runner.new()
+        |> Runner.put(:status, :settled)
+        |> Runner.switch(fn
+          %{status: :settled} -> fn r -> Runner.put(r, :final, :ok) end
+          _ -> fn r -> Runner.put(r, :final, :error) end
+        end)
+
+      assert runner.changes == %{status: :settled, final: :ok}
+    end
+
+    test "should return the same runner when it fails previously" do
+      runner = %Runner{failed?: true, changes: %{status: :settled}}
+      result = Runner.switch(runner, fn _ -> fn r -> Runner.put(r, :final, :ok) end end)
+      assert result == runner
+    end
+  end
+
   defp assert_runner_result(runner_result, expected_result),
     do: assert(runner_result == expected_result)
 end
