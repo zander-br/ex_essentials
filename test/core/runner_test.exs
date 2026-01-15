@@ -1,8 +1,6 @@
 defmodule ExEssentials.Core.RunnerTest do
   use ExUnit.Case
 
-  doctest ExEssentials.Core.Runner
-
   alias ExEssentials.Core.Runner
 
   describe "new/1" do
@@ -34,7 +32,15 @@ defmodule ExEssentials.Core.RunnerTest do
     test "should return updated runner with result when step is successful" do
       runner = Runner.new()
       function = fn _changes -> {:ok, :success} end
-      assert %Runner{changes: %{step1: :success}, failed?: false} = Runner.run(runner, :step1, function)
+
+      assert %Runner{
+               changes: %{},
+               failed?: false,
+               error_reason: nil,
+               failed_step: nil,
+               steps: [{:sync, :step1, ^function}],
+               timeout: 5000
+             } = Runner.run(runner, :step1, function)
     end
 
     test "should return the same runner when it fails previously" do
@@ -49,24 +55,120 @@ defmodule ExEssentials.Core.RunnerTest do
       runner = Runner.new()
       async_function = fn _changes -> {:ok, :async_result} end
 
-      assert %Runner{async_tasks: async_tasks} = Runner.run_async(runner, :async_step, async_function)
-      assert is_list(async_tasks)
-      assert length(async_tasks) == 1
+      assert %Runner{
+               changes: %{},
+               failed?: false,
+               error_reason: nil,
+               failed_step: nil,
+               steps: [{:async, :async_step, ^async_function}],
+               timeout: 5000
+             } = Runner.run_async(runner, :async_step, async_function)
     end
 
     test "should return the same runner when it fails previously" do
       failed_runner = %Runner{failed?: true}
       async_function = fn _changes -> {:ok, :async_result} end
-      assert %Runner{failed?: true} == Runner.run(failed_runner, :async_step, async_function)
+      assert %Runner{failed?: true} == Runner.run_async(failed_runner, :async_step, async_function)
+    end
+  end
+
+  describe "then/2" do
+    test "should return updated runner when runner is not failed" do
+      runner = Runner.new()
+      func = fn runner -> %Runner{runner | changes: %{a: 1, b: 2}} end
+      assert %Runner{changes: changes} = Runner.then(runner, func)
+      assert %{a: 1, b: 2} == changes
+    end
+
+    test "should return same runner when runner is failed" do
+      runner = %Runner{failed?: true, changes: %{a: 1}}
+      func = fn runner -> %Runner{runner | changes: %{a: 1, b: 2}} end
+      assert %Runner{failed?: true, changes: %{a: 1}} == Runner.then(runner, func)
+    end
+  end
+
+  describe "branch/3" do
+    test "should return updated runner when predicate is true" do
+      runner = %Runner{changes: %{status: :rejected}}
+
+      predicate = fn %{status: s} -> s == :rejected end
+      func = fn runner -> %Runner{runner | changes: Map.put(runner.changes, :compensation, :done)} end
+
+      assert %Runner{changes: changes} = Runner.branch(runner, predicate, func)
+      assert %{status: :rejected, compensation: :done} == changes
+    end
+
+    test "should return same runner when predicate is false" do
+      runner = %Runner{changes: %{status: :settled}}
+      predicate = fn %{status: s} -> s == :rejected end
+      func = fn runner -> %Runner{runner | changes: Map.put(runner.changes, :compensation, :done)} end
+      assert %Runner{changes: changes} = Runner.branch(runner, predicate, func)
+      assert %{status: :settled} == changes
+    end
+
+    test "should return same runner when runner is failed" do
+      runner = %Runner{failed?: true, changes: %{status: :rejected}}
+      predicate = fn _ -> true end
+      func = fn runner -> %Runner{runner | changes: Map.put(runner.changes, :compensation, :done)} end
+      assert %Runner{failed?: true, changes: %{status: :rejected}} == Runner.branch(runner, predicate, func)
+    end
+  end
+
+  describe "switch/2" do
+    test "should return updated runner when selector returns a continuation" do
+      runner = %Runner{changes: %{status: :settled}}
+
+      selector =
+        fn
+          %{status: :settled} -> &set_final_ok/1
+          _ -> &set_final_error/1
+        end
+
+      assert %Runner{changes: changes} = Runner.switch(runner, selector)
+      assert %{status: :settled, final: :ok} == changes
+    end
+
+    test "should return same runner when runner is failed" do
+      runner = %Runner{failed?: true, changes: %{status: :settled}}
+      selector = fn _ -> &set_final_ok/1 end
+      assert %Runner{failed?: true, changes: %{status: :settled}} == Runner.switch(runner, selector)
+    end
+
+    defp set_final_ok(runner = %Runner{}),
+      do: %Runner{runner | changes: Map.put(runner.changes, :final, :ok)}
+
+    defp set_final_error(runner = %Runner{}),
+      do: %Runner{runner | changes: Map.put(runner.changes, :final, :error)}
+  end
+
+  describe "finish/1" do
+    test "should return {:ok, changes} when all steps succeed" do
+      step_function = fn _changes -> {:ok, :result} end
+      runner = %Runner{timeout: 100, steps: [{:sync, :step, step_function}]}
+      assert {:ok, %{step: :result}} == Runner.finish(runner)
+    end
+
+    test "should return {:error, step, reason, changes_before} when step fails" do
+      put_step = {:put, :value, 1}
+      fail_function = fn _changes -> {:error, :boom} end
+      runner = %Runner{timeout: 100, steps: [put_step, {:sync, :fail, fail_function}]}
+      assert {:error, :fail, :boom, %{value: 1}} == Runner.finish(runner)
     end
   end
 
   describe "finish/2" do
-    test "should return result when all steps succeed" do
+    test "should return transformed result when all steps succeed" do
       step_function = fn _changes -> {:ok, :result} end
       finish_function = fn {:ok, changes} -> changes end
-      runner = [timeout: 100] |> Runner.new() |> Runner.run(:step, step_function)
+      runner = %Runner{timeout: 100, steps: [{:sync, :step, step_function}]}
       assert %{step: :result} == Runner.finish(runner, finish_function)
+    end
+
+    test "should return transformed error when any step fails" do
+      fail_function = fn _changes -> {:error, :boom} end
+      finish_function = fn {:error, step, reason, _changes_before} -> {:error, step, reason} end
+      runner = %Runner{timeout: 100, steps: [{:sync, :fail, fail_function}]}
+      assert {:error, :fail, :boom} == Runner.finish(runner, finish_function)
     end
   end
 
@@ -139,71 +241,6 @@ defmodule ExEssentials.Core.RunnerTest do
       |> Runner.run(:sum, sum_step)
       |> Runner.finish(finish_function)
       |> assert_runner_result({:error, :step2, :some_error})
-    end
-  end
-
-  describe "then/2" do
-    test "should return updated runner when it is not failed" do
-      runner =
-        Runner.new()
-        |> Runner.put(:a, 1)
-        |> Runner.then(fn r -> Runner.put(r, :b, 2) end)
-
-      assert runner.changes == %{a: 1, b: 2}
-    end
-
-    test "should return the same runner when it fails previously" do
-      runner = %Runner{failed?: true, changes: %{a: 1}}
-
-      result = Runner.then(runner, fn r -> Runner.put(r, :b, 2) end)
-
-      assert result == runner
-    end
-  end
-
-  describe "branch/3" do
-    test "should return updated runner when predicate is true" do
-      runner =
-        Runner.new()
-        |> Runner.put(:status, :rejected)
-        |> Runner.branch(fn %{status: s} -> s == :rejected end, fn r -> Runner.put(r, :compensation, :done) end)
-
-      assert runner.changes == %{status: :rejected, compensation: :done}
-    end
-
-    test "should return the same runner when predicate is false" do
-      runner =
-        Runner.new()
-        |> Runner.put(:status, :settled)
-        |> Runner.branch(fn %{status: s} -> s == :rejected end, fn r -> Runner.put(r, :compensation, :done) end)
-
-      assert runner.changes == %{status: :settled}
-    end
-
-    test "should return the same runner when it fails previously" do
-      runner = %Runner{failed?: true, changes: %{status: :rejected}}
-      result = Runner.branch(runner, fn _ -> true end, fn r -> Runner.put(r, :compensation, :done) end)
-      assert result == runner
-    end
-  end
-
-  describe "switch/2" do
-    test "should return updated runner when selecting a continuation" do
-      runner =
-        Runner.new()
-        |> Runner.put(:status, :settled)
-        |> Runner.switch(fn
-          %{status: :settled} -> fn r -> Runner.put(r, :final, :ok) end
-          _ -> fn r -> Runner.put(r, :final, :error) end
-        end)
-
-      assert runner.changes == %{status: :settled, final: :ok}
-    end
-
-    test "should return the same runner when it fails previously" do
-      runner = %Runner{failed?: true, changes: %{status: :settled}}
-      result = Runner.switch(runner, fn _ -> fn r -> Runner.put(r, :final, :ok) end end)
-      assert result == runner
     end
   end
 

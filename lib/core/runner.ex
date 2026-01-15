@@ -1,215 +1,320 @@
 defmodule ExEssentials.Core.Runner do
   @moduledoc """
-    A small, composable flow runner for building step-by-step pipelines with optional asynchronous work.
+  A small flow builder inspired by `Ecto.Multi`.
 
-    `ExEssentials.Core.Runner` lets you accumulate results across named steps while keeping a single
-    immutable `changes` map that is passed to each step function.
+  `ExEssentials.Core.Runner` helps you model and execute a flow as a sequence of **named steps**.
+  Each step contributes a value to a shared map called `changes`.
 
-    It supports two kinds of steps:
+  This module is designed to be **built first** and **executed later**:
 
-      - **Synchronous steps** via `run/3`, executed immediately and stored in `changes`.
-      - **Asynchronous steps** via `run_async/3`, executed in a separate `Task` and merged into `changes`
-        when the runner is about to continue synchronously (or when `finish/2` is called).
+    * `put/3`, `run/3`, and `run_async/3` only register steps
+    * execution happens only when calling `finish/1` or `finish/2`
 
-    The runner is **fail-fast**:
+  The execution model is **fail-fast**:
 
-      - When a step returns `{:error, reason}`, the runner is marked as failed and subsequent calls to
-        `put/3`, `run/3`, or `run_async/3` become no-ops.
-      - Step names must be unique within a flow. Reusing a step name raises an `ArgumentError`.
+    * steps run in the order they were registered
+    * when a step returns `{:error, reason}`, the flow stops immediately
+    * the error includes the failing step name and the `changes` accumulated so far
 
-    Asynchronous steps are awaited using `Task.yield_many/2` with the configured `:timeout` (in milliseconds).
-    Tasks that do not respond within the timeout are shutdown and their results are not merged.
+  ## Steps
 
-    When you are done building the flow, call `finish/2` to await any remaining async work and receive a
-    final result in the shape of either `{:ok, changes}` or `{:error, failed_step, reason, changes_before_error}`.
+  Steps are always registered with a unique name (`atom()`). Names are used:
+
+    * as keys in the resulting `changes` map
+    * to identify the failing step in case of an error
+
+  Supported step types:
+
+    * `put/3` - seeds a value into `changes`
+    * `run/3` - registers a synchronous step executed in order
+    * `run_async/3` - registers an asynchronous step executed concurrently
+
+  ## Asynchronous steps
+
+  Asynchronous steps are queued as the flow is traversed and are executed concurrently when the
+  flow needs to synchronize results:
+
+    * before running a synchronous step (`run/3`)
+    * at the end of the flow
+
+  Each asynchronous step runs with a **snapshot** of `changes` from the moment the async step
+  is registered during execution.
+
+  ## Return values
+
+  `finish/1` returns one of these tuples:
+
+    * `{:ok, changes}`
+    * `{:error, step, reason, changes_before}`
+
+  `finish/2` executes the flow and forwards the result tuple to a user function, allowing you to
+  transform it into any shape you want.
+
+  ## Examples
+
+  ### Basic flow
+
+      runner =
+        ExEssentials.Core.Runner.new(timeout: 5_000)
+        |> ExEssentials.Core.Runner.put(:value, 1)
+        |> ExEssentials.Core.Runner.run(:double, fn %{value: v} -> {:ok, v * 2} end)
+        |> ExEssentials.Core.Runner.run(:triple, fn %{value: v} -> {:ok, v * 3} end)
+
+      ExEssentials.Core.Runner.finish(runner)
+      #=> {:ok, %{value: 1, double: 2, triple: 3}}
+
+  ### Mixing sync and async
+
+      runner =
+        ExEssentials.Core.Runner.new(timeout: 5_000)
+        |> ExEssentials.Core.Runner.put(:value, 1)
+        |> ExEssentials.Core.Runner.run(:sync_step, fn _ -> {:ok, 2} end)
+        |> ExEssentials.Core.Runner.run_async(:async_step, fn _ -> {:ok, 3} end)
+        |> ExEssentials.Core.Runner.run(:sum, fn %{value: a, sync_step: b, async_step: c} -> {:ok, a + b + c} end)
+
+      ExEssentials.Core.Runner.finish(runner)
+      #=> {:ok, %{value: 1, sync_step: 2, async_step: 3, sum: 6}}
+
+  ### Error handling
+
+      runner =
+        ExEssentials.Core.Runner.new()
+        |> ExEssentials.Core.Runner.put(:value, 1)
+        |> ExEssentials.Core.Runner.run(:may_fail, fn _ -> {:error, :boom} end)
+        |> ExEssentials.Core.Runner.run(:never_runs, fn _ -> {:ok, :ignored} end)
+
+      ExEssentials.Core.Runner.finish(runner)
+      #=> {:error, :may_fail, :boom, %{value: 1}}
+
+  ### Transforming the result with `finish/2`
+
+      runner =
+        ExEssentials.Core.Runner.new()
+        |> ExEssentials.Core.Runner.put(:value, 1)
+        |> ExEssentials.Core.Runner.run(:double, fn %{value: v} -> {:ok, v * 2} end)
+
+      ExEssentials.Core.Runner.finish(runner, fn
+        {:ok, %{double: result}} -> {:ok, result}
+        {:error, step, reason, _changes} -> {:error, step, reason}
+      end)
+      #=> {:ok, 2}
+
   """
   alias ExEssentials.Core.Runner
 
-  defstruct steps: [], async_tasks: [], changes: %{}, failed?: false, error_reason: nil, failed_step: nil, timeout: 5000
+  defstruct steps: [],
+            changes: %{},
+            failed?: false,
+            error_reason: nil,
+            failed_step: nil,
+            timeout: 5000
 
-  @type step :: {:sync, atom(), any()} | {:async, atom(), Task.t()}
+  @typedoc """
+  A single registered step in a flow.
 
+  Steps are registered during build time and executed during `finish/1`.
+
+    * `{:put, name, value}` - seeds a value
+    * `{:sync, name, fun}` - runs synchronously
+    * `{:async, name, fun}` - runs concurrently
+  """
+  @type step ::
+          {:put, step :: atom(), value :: any()}
+          | {:sync, step :: atom(), (map() -> {:ok, any()} | {:error, any()})}
+          | {:async, step :: atom(), (map() -> {:ok, any()} | {:error, any()})}
+
+  @typedoc """
+  The runner struct.
+
+  The `steps` field stores the planned execution steps and `changes` stores seeded values.
+  """
   @type t :: %Runner{
           steps: list(step()),
-          async_tasks: list(Task.t()),
           changes: map(),
           failed?: boolean(),
           error_reason: any(),
-          failed_step: atom(),
+          failed_step: step :: atom() | nil,
           timeout: integer()
         }
 
-  @doc """
-    Creates a new runner.
+  @typedoc """
+  Result returned by `finish/1`.
 
-    Options:
-
-      - `:timeout` - the timeout (in milliseconds) used when awaiting async steps (default: `5000`).
-
-    ## Examples
-
-        iex> runner = ExEssentials.Core.Runner.new(timeout: 1_000)
-        iex> runner.timeout
-        1000
+  On success, returns the final `changes` map.
+  On error, returns the failing step name, the reason, and the `changes` accumulated so far.
   """
-  @spec new(opts :: Keyword.t()) :: t()
+  @type finish_result ::
+          {:ok, changes :: map()}
+          | {:error, step :: atom(), reason :: any(), changes_before :: map()}
+
+  @doc """
+  Creates a new runner.
+
+  ## Options
+
+    * `:timeout` - timeout (in milliseconds) used when awaiting asynchronous steps.
+
+  ## Examples
+
+      iex> ExEssentials.Core.Runner.new().timeout
+      5000
+
+      iex> ExEssentials.Core.Runner.new(timeout: 10_000).timeout
+      10000
+
+  """
+  @spec new(opts :: keyword()) :: Runner.t()
   def new(opts \\ []) do
     timeout = Keyword.get(opts, :timeout, 5000)
     %Runner{timeout: timeout}
   end
 
   @doc """
-    Inserts a value into the runner under `step_name`.
+  Seeds a value into `changes` under `step_name` and registers a `:put` step.
 
-    This is useful for seeding the flow with inputs or precomputed values.
+  Values seeded via `put/3` are immediately available in `runner.changes`, which is useful when
+  composing flows with `branch/3` and `switch/2`.
 
-    If the runner is already marked as failed, this function returns the runner unchanged.
+  Raises `ArgumentError` if the step name has already been used.
 
-    ## Examples
+  ## Examples
 
-        iex> runner = ExEssentials.Core.Runner.new()
-        iex> runner = ExEssentials.Core.Runner.put(runner, :user_id, 123)
-        iex> runner.changes
-        %{user_id: 123}
+      iex> runner = ExEssentials.Core.Runner.new() |> ExEssentials.Core.Runner.put(:a, 1)
+      iex> runner.changes
+      %{a: 1}
+
   """
-  @spec put(runner :: t(), step_name :: atom(), value :: any()) :: t()
+  @spec put(runner :: Runner.t(), step_name :: atom(), value :: any()) :: Runner.t()
   def put(runner = %Runner{failed?: true}, _step_name, _value), do: runner
 
   def put(runner = %Runner{changes: changes, steps: steps}, step_name, value)
       when is_atom(step_name) do
+    validate_unique_step!(runner, step_name)
     changes = Map.put(changes, step_name, value)
-    steps = steps ++ [{:sync, step_name, value}]
+    steps = steps ++ [{:put, step_name, value}]
     %Runner{runner | changes: changes, steps: steps}
   end
 
   @doc """
-    Executes a synchronous step and stores its result in `changes`.
+  Registers a synchronous step.
 
-    Before running the step, the runner will await any pending async tasks so that their results are
-    available to the step.
+  The given function is executed during `finish/1` and receives the current `changes` map.
 
-    The step function receives the current `changes` map and must return either:
+  The function must return:
 
-      - `{:ok, result}` to continue the flow, storing `result` under `step_name`.
-      - `{:error, reason}` to fail the flow, storing `reason` under `step_name` and marking the runner as failed.
+    * `{:ok, result}` - stores `result` under the step name
+    * `{:error, reason}` - stops the flow with an error
 
-    Step names must be unique; reusing the same `step_name` raises an `ArgumentError`.
+  Raises `ArgumentError` if the step name has already been used.
 
-    If the runner is already marked as failed, this function returns the runner unchanged.
+  ## Examples
 
-    ## Examples
+      runner =
+        ExEssentials.Core.Runner.new()
+        |> ExEssentials.Core.Runner.put(:value, 2)
+        |> ExEssentials.Core.Runner.run(:square, fn %{value: v} -> {:ok, v * v} end)
 
-        iex> runner = ExEssentials.Core.Runner.new()
-        iex> runner = ExEssentials.Core.Runner.put(runner, :a, 2)
-        iex> runner = ExEssentials.Core.Runner.run(runner, :b, fn changes -> {:ok, changes.a * 3} end)
-        iex> runner.changes
-        %{a: 2, b: 6}
+      ExEssentials.Core.Runner.finish(runner)
+      #=> {:ok, %{value: 2, square: 4}}
 
-        iex> runner = ExEssentials.Core.Runner.new()
-        iex> runner = ExEssentials.Core.Runner.run(runner, :step, fn _changes -> {:error, :boom} end)
-        iex> {runner.failed?, runner.failed_step, runner.error_reason}
-        {true, :step, :boom}
   """
   @spec run(
-          runner :: t(),
+          runner :: Runner.t(),
           step_name :: atom(),
           function :: (changes :: map() -> {:ok, result :: any()} | {:error, reason :: any()})
-        ) :: t()
-  def run(runner = %Runner{failed?: true}, _step_name, _function),
-    do: runner
+        ) :: Runner.t()
+  def run(runner = %Runner{failed?: true}, _step_name, _function), do: runner
 
-  def run(runner, step_name, function)
+  def run(runner = %Runner{steps: steps}, step_name, function)
       when is_function(function, 1) and is_atom(step_name) do
     validate_unique_step!(runner, step_name)
 
-    case await_pending_async_tasks(runner) do
-      runner = %Runner{failed?: true} -> runner
-      runner -> execute_step(runner, step_name, function, :sync)
-    end
+    steps = steps ++ [{:sync, step_name, function}]
+    %Runner{runner | steps: steps}
   end
 
   @doc """
-    Spawns an asynchronous step as a `Task`.
+  Registers an asynchronous step.
 
-    The step function receives the current `changes` map *as it exists at the time the task is spawned*.
-    The task result is merged into `changes` the next time the runner needs to synchronize (on `run/3`
-    or `finish/2`).
+  Asynchronous steps are executed concurrently during `finish/1`. Their results are merged into
+  `changes` under their step names.
 
-    If the runner is already marked as failed, this function returns the runner unchanged.
+  Raises `ArgumentError` if the step name has already been used.
 
-    Step names must be unique; reusing the same `step_name` raises an `ArgumentError`.
+  ## Examples
 
-    Notes on timeouts:
+      runner =
+        ExEssentials.Core.Runner.new()
+        |> ExEssentials.Core.Runner.put(:value, 2)
+        |> ExEssentials.Core.Runner.run_async(:double, fn %{value: v} -> {:ok, v * 2} end)
+        |> ExEssentials.Core.Runner.run(:sum, fn %{value: v, double: d} -> {:ok, v + d} end)
 
-      - Async tasks are awaited with the runner's configured `:timeout`.
-      - If a task does not respond within the timeout, it is shutdown and its result is not merged.
+      ExEssentials.Core.Runner.finish(runner)
+      #=> {:ok, %{value: 2, double: 4, sum: 6}}
 
-    ## Examples
-
-        iex> runner = ExEssentials.Core.Runner.new(timeout: 5_000)
-        iex> runner = ExEssentials.Core.Runner.put(runner, :base, 10)
-        iex> runner = ExEssentials.Core.Runner.run_async(runner, :double, fn changes -> {:ok, changes.base * 2} end)
-        iex> runner = ExEssentials.Core.Runner.run(runner, :plus_one, fn changes -> {:ok, changes.base + 1} end)
-        iex> Map.take(runner.changes, [:base, :double, :plus_one])
-        %{base: 10, double: 20, plus_one: 11}
   """
   @spec run_async(
-          runner :: t(),
+          runner :: Runner.t(),
           step_name :: atom(),
           function :: (changes :: map() -> {:ok, result :: any()} | {:error, reason :: any()})
-        ) :: t()
-  def run_async(runner = %Runner{failed?: true}, _step_name, _function),
-    do: runner
+        ) :: Runner.t()
+  def run_async(runner = %Runner{failed?: true}, _step_name, _function), do: runner
 
-  def run_async(runner, step_name, function)
+  def run_async(runner = %Runner{steps: steps}, step_name, function)
       when is_function(function, 1) and is_atom(step_name) do
     validate_unique_step!(runner, step_name)
-    execute_step_async(runner, step_name, function)
+
+    steps = steps ++ [{:async, step_name, function}]
+    %Runner{runner | steps: steps}
   end
 
   @doc """
-  Continues the runner pipeline by applying `fun` to the current runner.
+  Applies a continuation function to the runner.
 
-  This is useful to keep composing steps without calling `finish/2` in the middle
-  of the pipeline.
-
-  If the runner is already marked as failed, this function returns the runner unchanged.
+  This is a convenience for composing flow-building functions.
 
   ## Examples
 
-      iex> ExEssentials.Core.Runner.new()
-      ...> |> ExEssentials.Core.Runner.put(:a, 1)
-      ...> |> ExEssentials.Core.Runner.then(fn r -> ExEssentials.Core.Runner.put(r, :b, 2) end)
-      ...> |> ExEssentials.Core.Runner.finish(fn result -> result end)
-      {:ok, %{a: 1, b: 2}}
-  """
-  @spec then(runner :: t(), fun :: (t() -> t())) :: t()
-  def then(runner = %Runner{failed?: true}, _fun), do: runner
+      runner =
+        ExEssentials.Core.Runner.new()
+        |> ExEssentials.Core.Runner.put(:a, 1)
+        |> ExEssentials.Core.Runner.then(fn r -> ExEssentials.Core.Runner.put(r, :b, 2) end)
 
-  def then(runner = %Runner{}, fun) when is_function(fun, 1),
-    do: fun.(runner)
+      runner.changes
+      #=> %{a: 1, b: 2}
+
+  """
+  @spec then(
+          runner :: Runner.t(),
+          function :: (runner :: Runner.t() -> Runner.t())
+        ) :: Runner.t()
+  def then(runner = %Runner{failed?: true}, _fun), do: runner
+  def then(runner = %Runner{}, fun) when is_function(fun, 1), do: fun.(runner)
 
   @doc """
-  Conditionally continues the runner pipeline.
+  Conditionally applies `on_true` when `predicate` evaluates to `true`.
 
-  `predicate` receives the current `changes` map and must return a boolean.
-  When `predicate` returns `true`, `on_true` is executed receiving the current runner.
-  When `predicate` returns `false`, the runner is returned unchanged.
-
-  If the runner is already marked as failed, this function returns the runner unchanged.
+  The predicate is evaluated using the current `runner.changes`.
 
   ## Examples
 
-      iex> ExEssentials.Core.Runner.new()
-      ...> |> ExEssentials.Core.Runner.put(:status, :rejected)
-      ...> |> ExEssentials.Core.Runner.branch(
-      ...>   fn %{status: status} -> status == :rejected end,
-      ...>   fn r -> ExEssentials.Core.Runner.put(r, :compensation, :done) end
-      ...> )
-      ...> |> ExEssentials.Core.Runner.finish(fn result -> result end)
-      {:ok, %{status: :rejected, compensation: :done}}
+      runner =
+        ExEssentials.Core.Runner.new()
+        |> ExEssentials.Core.Runner.put(:status, :rejected)
+        |> ExEssentials.Core.Runner.branch(
+          fn %{status: status} -> status == :rejected end,
+          fn r -> ExEssentials.Core.Runner.put(r, :compensate, true) end
+        )
+
+      runner.changes
+      #=> %{status: :rejected, compensate: true}
+
   """
-  @spec branch(runner :: t(), predicate :: (map() -> boolean()), on_true :: (t() -> t())) :: t()
+  @spec branch(
+          runner :: Runner.t(),
+          predicate :: (changes :: map() -> boolean()),
+          on_true :: (runner :: Runner.t() -> Runner.t())
+        ) :: Runner.t()
   def branch(runner = %Runner{failed?: true}, _predicate, _on_true), do: runner
 
   def branch(runner = %Runner{changes: changes}, predicate, on_true)
@@ -218,167 +323,186 @@ defmodule ExEssentials.Core.Runner do
   end
 
   @doc """
-  Selects the next continuation based on the current `changes`.
+  Selects and applies a continuation based on the current `runner.changes`.
 
-  The given function must return a continuation function `(runner -> runner)`.
-  This enables pattern-matching on `changes` while keeping the pipeline linear.
-
-  If the runner is already marked as failed, this function returns the runner unchanged.
+  The selector must return a function that receives the runner.
 
   ## Examples
 
-      iex> ExEssentials.Core.Runner.new()
-      ...> |> ExEssentials.Core.Runner.put(:status, :settled)
-      ...> |> ExEssentials.Core.Runner.switch(fn
-      ...>   %{status: :settled} -> fn r -> ExEssentials.Core.Runner.put(r, :final, :ok) end
-      ...>   _ -> fn r -> ExEssentials.Core.Runner.put(r, :final, :error) end
-      ...> end)
-      ...> |> ExEssentials.Core.Runner.finish(fn result -> result end)
-      {:ok, %{status: :settled, final: :ok}}
+      runner =
+        ExEssentials.Core.Runner.new()
+        |> ExEssentials.Core.Runner.put(:status, :settled)
+        |> ExEssentials.Core.Runner.switch(fn
+          %{status: :settled} -> fn r -> ExEssentials.Core.Runner.put(r, :final, :ok) end
+          _ -> fn r -> ExEssentials.Core.Runner.put(r, :final, :error) end
+        end)
+
+      runner.changes
+      #=> %{status: :settled, final: :ok}
+
   """
-  @spec switch(runner :: t(), selector :: (map() -> (t() -> t()))) :: t()
+  @spec switch(
+          runner :: Runner.t(),
+          selector :: (changes :: map() -> (runner :: Runner.t() -> Runner.t()))
+        ) :: Runner.t()
   def switch(runner = %Runner{failed?: true}, _selector), do: runner
 
-  def switch(runner = %Runner{changes: changes}, selector)
-      when is_function(selector, 1) do
+  def switch(runner = %Runner{changes: changes}, selector) when is_function(selector, 1) do
     continuation = selector.(changes)
     continuation.(runner)
   end
 
   @doc """
-    Finalizes the flow and returns the output of `function`.
+  Executes the flow and returns the execution result.
 
-    This function awaits any pending async tasks (subject to the runner's `:timeout`) and then calls
-    `function` with one of the following results:
+  Returns:
 
-      - `{:ok, changes}` when all executed steps completed successfully.
-      - `{:error, failed_step, reason, changes_before_error}` when a step failed.
+    * `{:ok, changes}` when all steps succeed
+    * `{:error, step, reason, changes_before}` when a step fails
 
-    `changes_before_error` contains only the accumulated values up to (but not including) the failing step.
+  ## Examples
 
-    ## Examples
+      runner =
+        ExEssentials.Core.Runner.new()
+        |> ExEssentials.Core.Runner.put(:value, 1)
+        |> ExEssentials.Core.Runner.run(:double, fn %{value: v} -> {:ok, v * 2} end)
 
-        iex> ExEssentials.Core.Runner.new()
-        ...> |> ExEssentials.Core.Runner.put(:a, 1)
-        ...> |> ExEssentials.Core.Runner.run(:b, fn ch -> {:ok, ch.a + 1} end)
-        ...> |> ExEssentials.Core.Runner.finish(fn result -> result end)
-        {:ok, %{a: 1, b: 2}}
+      ExEssentials.Core.Runner.finish(runner)
+      #=> {:ok, %{value: 1, double: 2}}
 
-        iex> ExEssentials.Core.Runner.new()
-        ...> |> ExEssentials.Core.Runner.put(:a, 1)
-        ...> |> ExEssentials.Core.Runner.run(:b, fn _ch -> {:error, :nope} end)
-        ...> |> ExEssentials.Core.Runner.run(:c, fn _ch -> {:ok, :never_runs} end)
-        ...> |> ExEssentials.Core.Runner.finish(fn result -> result end)
-        {:error, :b, :nope, %{a: 1}}
   """
-  @spec finish(runner :: t(), function :: (changes :: {:ok, map()} | {:error, atom(), any()} -> any())) :: any()
-  def finish(runner = %Runner{}, function),
-    do: runner |> await_pending_async_tasks() |> execute_finish(function)
+  @spec finish(runner :: Runner.t()) ::
+          {:ok, changes :: map()} | {:error, step :: atom(), reason :: any(), changes_before :: map()}
+  def finish(runner = %Runner{}), do: execute_flow(runner)
 
-  defp execute_step(runner, step_name, function, type) do
-    %Runner{changes: changes} = runner
-    function |> run_step_function(changes) |> update_runner(runner, step_name, type)
+  @doc """
+  Executes the flow and passes the result to the given function.
+
+  This is useful when you want to normalize the output or extract a single value.
+
+  ## Examples
+
+      runner =
+        ExEssentials.Core.Runner.new()
+        |> ExEssentials.Core.Runner.put(:value, 1)
+        |> ExEssentials.Core.Runner.run(:double, fn %{value: v} -> {:ok, v * 2} end)
+
+      ExEssentials.Core.Runner.finish(runner, fn
+        {:ok, %{double: result}} -> {:ok, result}
+        {:error, step, reason, _changes} -> {:error, step, reason}
+      end)
+      #=> {:ok, 2}
+
+  """
+  @spec finish(runner :: Runner.t(), function :: (finish_result() -> any())) :: any()
+  def finish(runner = %Runner{}, function) when is_function(function, 1) do
+    runner
+    |> execute_flow()
+    |> function.()
   end
 
-  defp execute_step_async(runner, step_name, function) do
-    %Runner{async_tasks: async_tasks, changes: changes, steps: steps} = runner
-    async_function = fn -> execute_async_step(step_name, function, changes) end
-    task = Task.async(async_function)
-    async_tasks = async_tasks ++ [task]
-    steps = steps ++ [{:async, step_name, task}]
-    %Runner{runner | steps: steps, async_tasks: async_tasks}
+  defp execute_flow(%Runner{steps: steps, changes: seed_changes, timeout: timeout}) do
+    initial = %{changes: seed_changes, pending_async: [], timeout: timeout}
+
+    steps
+    |> Enum.reduce_while(initial, &reduce_step/2)
+    |> finalize_flow()
   end
 
-  defp execute_async_step(step_name, function, changes) do
-    case run_step_function(function, changes) do
-      {:ok, result} -> {step_name, {:ok, result}}
-      {:error, reason} -> {step_name, {:error, reason}}
+  defp reduce_step({:async, step_name, fun}, acc),
+    do: {:cont, enqueue_async(acc, step_name, fun)}
+
+  defp reduce_step({:put, step_name, value}, acc),
+    do: handle_put_step(acc, step_name, value)
+
+  defp reduce_step({:sync, step_name, fun}, acc),
+    do: handle_sync_step(acc, step_name, fun)
+
+  defp handle_put_step(acc, step_name, value) do
+    case flush_pending_async(acc) do
+      {:ok, acc2} -> {:cont, put_change(acc2, step_name, value)}
+      {:error, step, reason, changes_before} -> {:halt, {:error, step, reason, changes_before}}
     end
   end
 
-  defp run_step_function(function, changes), do: function.(changes)
-
-  defp update_runner({:ok, result}, runner, step_name, type) do
-    %Runner{steps: steps, changes: changes} = runner
-    steps = steps ++ [{type, step_name, result}]
-    changes = Map.put(changes, step_name, result)
-    %Runner{runner | changes: changes, steps: steps}
+  defp handle_sync_step(acc, step_name, fun) do
+    with {:ok, acc2} <- flush_pending_async(acc),
+         {:ok, changes2} <- run_sync_step(acc2.changes, step_name, fun) do
+      {:cont, %{acc2 | changes: changes2}}
+    else
+      {:error, step, reason, changes_before} ->
+        {:halt, {:error, step, reason, changes_before}}
+    end
   end
 
-  defp update_runner({:error, reason}, runner, step_name, _type) do
-    %Runner{changes: changes} = runner
-    changes = Map.put(changes, step_name, reason)
-    %Runner{runner | changes: changes, error_reason: reason, failed?: true, failed_step: step_name}
+  defp finalize_flow(error = {:error, _step, _reason, _changes_before}),
+    do: error
+
+  defp finalize_flow(%{pending_async: [], changes: changes}),
+    do: {:ok, changes}
+
+  defp finalize_flow(acc) do
+    case flush_pending_async(acc) do
+      {:ok, acc2} -> {:ok, acc2.changes}
+      {:error, step, reason, changes_before} -> {:error, step, reason, changes_before}
+    end
   end
 
-  defp await_pending_async_tasks(runner = %Runner{async_tasks: []}), do: runner
+  defp enqueue_async(acc, step_name, fun),
+    do: %{acc | pending_async: acc.pending_async ++ [{step_name, fun, acc.changes}]}
 
-  defp await_pending_async_tasks(runner) do
-    %Runner{async_tasks: tasks, changes: changes, timeout: timeout} = runner
-    accumulate_async_results = %{changes: changes, failed_step: nil, error_reason: nil}
+  defp put_change(acc, step_name, value),
+    do: %{acc | changes: Map.put(acc.changes, step_name, value)}
 
-    tasks
-    |> Task.yield_many(timeout)
-    |> Enum.reduce(accumulate_async_results, &process_async_task/2)
-    |> update_runner_with_async_results(runner)
+  defp run_sync_step(changes, step_name, fun) do
+    case fun.(changes) do
+      {:ok, result} -> {:ok, Map.put(changes, step_name, result)}
+      {:error, reason} -> {:error, step_name, reason, changes}
+    end
   end
 
-  defp process_async_task({_task, {:ok, {step_name, {:ok, result}}}}, accumulate) do
-    %{changes: changes} = accumulate
-    changes = Map.put(changes, step_name, result)
-    %{accumulate | changes: changes}
+  defp flush_pending_async(acc = %{pending_async: []}), do: {:ok, acc}
+
+  defp flush_pending_async(acc = %{pending_async: pending_async, timeout: timeout}) do
+    pending_async
+    |> async_stream_results(timeout)
+    |> merge_async_results(clear_pending_async(acc))
   end
 
-  defp process_async_task({_task, {:ok, {step_name, {:error, reason}}}}, accumulate) do
-    %{changes: changes} = accumulate
-    changes = Map.put(changes, step_name, reason)
-    %{changes: changes, failed_step: step_name, error_reason: reason}
+  defp async_stream_results(pending_async, timeout) do
+    pending_async
+    |> Task.async_stream(&execute_async_item/1, timeout: timeout, ordered: false)
+    |> Enum.to_list()
   end
 
-  defp process_async_task({task, nil}, accumulate),
-    do: handle_task_timeout(task, accumulate)
+  defp execute_async_item({step_name, fun, snapshot_changes}),
+    do: {step_name, fun.(snapshot_changes)}
 
-  defp process_async_task(_other, accumulate),
-    do: accumulate
+  defp clear_pending_async(acc), do: %{acc | pending_async: []}
 
-  defp handle_task_timeout(task, accumulate) do
-    Task.shutdown(task, :brutal_kill)
-    accumulate
-  end
+  defp merge_async_results(results, acc),
+    do: Enum.reduce_while(results, {:ok, acc}, &merge_async_results_reduce/2)
 
-  defp update_runner_with_async_results(%{changes: changes, failed_step: nil}, runner),
-    do: %Runner{runner | async_tasks: [], changes: changes}
+  defp merge_async_results_reduce(item, {:ok, acc}),
+    do: handle_async_item(item, acc)
 
-  defp update_runner_with_async_results(accumulate, runner) do
-    %{changes: changes, failed_step: failed_step, error_reason: reason} = accumulate
+  defp merge_async_results_reduce(_item, err = {:error, _step, _reason, _changes_before}),
+    do: {:halt, err}
 
-    runner
-    |> Map.put(:async_tasks, [])
-    |> Map.put(:changes, changes)
-    |> Map.put(:failed?, true)
-    |> Map.put(:failed_step, failed_step)
-    |> Map.put(:error_reason, reason)
-  end
+  defp handle_async_item({:ok, {step_name, {:ok, result}}}, acc),
+    do: {:cont, {:ok, put_async_result(acc, step_name, result)}}
 
-  defp execute_finish(runner = %Runner{failed?: true}, function) do
-    %Runner{changes: changes, failed_step: failed_step, error_reason: reason} = runner
-    changes_before_error = extract_changes_before_error(changes, failed_step)
-    runner_result = {:error, failed_step, reason, changes_before_error}
-    function.(runner_result)
-  end
+  defp handle_async_item({:ok, {step_name, {:error, reason}}}, acc),
+    do: {:halt, {:error, step_name, reason, acc.changes}}
 
-  defp execute_finish(%Runner{changes: changes}, function) do
-    runner_result = {:ok, changes}
-    function.(runner_result)
-  end
+  defp handle_async_item({:exit, _reason}, acc),
+    do: {:halt, {:error, :async_task_exit, :task_exit, acc.changes}}
 
-  defp extract_changes_before_error(changes, error_step) do
-    changes
-    |> Enum.take_while(&before_error_step?(&1, error_step))
-    |> Map.new()
-  end
+  defp handle_async_item(other, acc),
+    do: {:halt, {:error, :async_unknown, other, acc.changes}}
 
-  defp before_error_step?({step, _change}, compare_step), do: step != compare_step
+  defp put_async_result(acc, step_name, result),
+    do: %{acc | changes: Map.put(acc.changes, step_name, result)}
 
   defp validate_unique_step!(%Runner{steps: steps}, step_name) do
     if step_step_name_exists?(steps, step_name) do
@@ -389,6 +513,6 @@ defmodule ExEssentials.Core.Runner do
   defp step_step_name_exists?(steps, step_name),
     do: Enum.any?(steps, &step_name_matches?(&1, step_name))
 
-  defp step_name_matches?({_type, step_name, _result_or_task}, compare_step_name),
+  defp step_name_matches?({_type, step_name, _value_or_fun}, compare_step_name),
     do: step_name == compare_step_name
 end
