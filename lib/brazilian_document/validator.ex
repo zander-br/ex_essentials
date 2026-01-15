@@ -50,15 +50,13 @@ defmodule ExEssentials.BrazilianDocument.Validator do
   """
   @spec valid?(document :: String.t()) :: boolean()
   def valid?(document) do
-    cleaned =
-      document
-      |> String.trim()
-      |> String.replace(~r/\D/, "")
+    input = normalize_input(document)
 
-    cond do
-      String.length(cleaned) == 11 -> cpf_valid?(cleaned)
-      String.length(cleaned) == 14 -> cnpj_valid?(cleaned)
-      true -> false
+    case document_type(input) do
+      :cnpj_alphanum -> input |> clean_alphanum() |> cnpj_valid?()
+      :cpf -> input |> clean_digits() |> cpf_valid?()
+      :cnpj -> input |> clean_digits() |> cnpj_valid?()
+      :invalid -> false
     end
   end
 
@@ -114,6 +112,27 @@ defmodule ExEssentials.BrazilianDocument.Validator do
       digits == append_cpf_digits(base)
     else
       _ -> false
+    end
+  end
+
+  defp normalize_input(document) when is_binary(document),
+    do: document |> String.trim() |> String.upcase()
+
+  defp clean_alphanum(input) when is_binary(input),
+    do: String.replace(input, @alphanum_regex, "")
+
+  defp clean_digits(input) when is_binary(input),
+    do: String.replace(input, ~r/[^0-9]/, "")
+
+  defp document_type(input) when is_binary(input) do
+    alphanum = clean_alphanum(input)
+    clean_digits = clean_digits(input)
+
+    cond do
+      Regex.match?(@cnpj_alphanum_regex, alphanum) -> :cnpj_alphanum
+      String.length(clean_digits) == 11 -> :cpf
+      String.length(clean_digits) == 14 -> :cnpj
+      true -> :invalid
     end
   end
 
