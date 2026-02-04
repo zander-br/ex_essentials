@@ -122,6 +122,23 @@ defmodule ExEssentials.Core.RunnerTest do
     end
   end
 
+  describe "recover/3" do
+    test "should return updated runner when runner is not failed" do
+      runner = Runner.new()
+      predicate = fn {_step, _reason, _changes} -> true end
+      on_error = fn %Runner{} = r, {_step, _reason, _changes} -> Runner.put(r, :recovered, true) end
+      assert %Runner{steps: steps, failed?: false} = Runner.recover(runner, predicate, on_error)
+      assert [{:recover, ^predicate, ^on_error}] = steps
+    end
+
+    test "should return same runner when runner is failed" do
+      runner = %Runner{failed?: true, changes: %{status: :settled}}
+      predicate = fn {_step, _reason, _changes} -> true end
+      on_error = fn %Runner{} = r, {_step, _reason, _changes} -> Runner.put(r, :recovered, true) end
+      assert %Runner{failed?: true, changes: %{status: :settled}} == Runner.recover(runner, predicate, on_error)
+    end
+  end
+
   describe "finish/1" do
     test "should return {:ok, changes} when all steps succeed" do
       step_function = fn _changes -> {:ok, :result} end
@@ -223,6 +240,63 @@ defmodule ExEssentials.Core.RunnerTest do
       |> Runner.finish(finish_function)
       |> assert_runner_result({:error, :step2, :some_error})
     end
+
+    test "should recover from a failing sync step and continue executing remaining steps" do
+      fail_function = fn _changes -> {:error, :boom} end
+
+      recover_predicate = fn {step, reason, _changes_before} -> step == :fail and reason == :boom end
+
+      recover_on_error = fn %Runner{} = runner, {_step, _reason, _changes_before} ->
+        runner
+        |> Runner.put(:recovered_result, :done)
+      end
+
+      after_step = fn %{recovered_result: v} -> {:ok, v} end
+      finish_function = fn {:ok, %{after: v}} -> {:ok, v} end
+
+      Runner.new()
+      |> Runner.put(:value, 1)
+      |> Runner.run(:fail, fail_function)
+      |> Runner.recover(recover_predicate, recover_on_error)
+      |> Runner.run(:after, after_step)
+      |> Runner.finish(finish_function)
+      |> assert_runner_result({:ok, :done})
+    end
+
+    test "should return the original error when no recover matches" do
+      fail_function = fn _changes -> {:error, :boom} end
+      recover_predicate = fn {step, _reason, _changes_before} -> step == :other_step end
+      finish_function = fn {:error, step, reason, _changes} -> {:error, step, reason} end
+
+      recover_on_error = fn %Runner{} = runner, {_step, _reason, _changes_before} ->
+        Runner.put(runner, :recovered_result, :done)
+      end
+
+      Runner.new()
+      |> Runner.put(:value, 1)
+      |> Runner.run(:fail, fail_function)
+      |> Runner.recover(recover_predicate, recover_on_error)
+      |> Runner.run(:never_runs, fn _ -> {:ok, :ignored} end)
+      |> Runner.finish(finish_function)
+      |> assert_runner_result({:error, :fail, :boom})
+    end
+
+    test "should fail with duplicated_step_name when recover injects a step name that already exists" do
+      fail_function = fn _changes -> {:error, :boom} end
+      recover_predicate = fn {step, reason, _changes_before} -> step == :fail and reason == :boom end
+
+      recover_on_error = fn %Runner{} = runner, {_step, _reason, _changes_before} ->
+        Runner.run(runner, :after, fn _ -> {:ok, :injected} end)
+      end
+
+      Runner.new()
+      |> Runner.put(:value, 1)
+      |> Runner.run(:fail, fail_function)
+      |> Runner.recover(recover_predicate, recover_on_error)
+      |> Runner.run(:after, fn _ -> {:ok, :original} end)
+      |> Runner.finish()
+      |> assert_runner_result({:error, :runner, {:duplicated_step_name, :after}, %{value: 1}})
+    end
   end
 
   defp assert_runner_result(runner_result, expected_result),
@@ -231,15 +305,15 @@ defmodule ExEssentials.Core.RunnerTest do
   defp predicate_rejected?(%{status: status}), do: status == :rejected
   defp predicate_rejected?(_changes), do: false
 
-  defp continuation_add_compensation(%Runner{} = runner),
+  defp continuation_add_compensation(runner = %Runner{}),
     do: Runner.put(runner, :compensation, :done)
 
   defp select_final_continuation(%{status: :settled}), do: &set_final_ok/1
   defp select_final_continuation(_changes), do: &set_final_error/1
 
-  defp set_final_ok(%Runner{} = runner),
+  defp set_final_ok(runner = %Runner{}),
     do: %Runner{runner | changes: Map.put(runner.changes, :final, :ok)}
 
-  defp set_final_error(%Runner{} = runner),
+  defp set_final_error(runner = %Runner{}),
     do: %Runner{runner | changes: Map.put(runner.changes, :final, :error)}
 end
