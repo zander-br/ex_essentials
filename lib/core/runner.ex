@@ -28,6 +28,7 @@ defmodule ExEssentials.Core.Runner do
     * `put/3` - seeds a value into `changes`
     * `run/3` - registers a synchronous step executed in order
     * `run_async/3` - registers an asynchronous step executed concurrently
+    * `recover/3` - registers an error recovery handler that can inject steps when an error occurs
 
   ## Asynchronous steps
 
@@ -119,6 +120,7 @@ defmodule ExEssentials.Core.Runner do
     * `{:async, name, fun}` - runs concurrently
     * `{:branch, predicate, on_true}` - conditionally injects more steps at runtime
     * `{:switch, selector}` - injects more steps at runtime based on `changes`
+    * `{:recover, predicate, on_error}` - conditionally intercepts errors and injects more steps at runtime
   """
   @type step ::
           {:put, step :: atom(), value :: any()}
@@ -126,6 +128,9 @@ defmodule ExEssentials.Core.Runner do
           | {:async, step :: atom(), (map() -> {:ok, any()} | {:error, any()})}
           | {:branch, predicate :: (map() -> boolean()), on_true :: (Runner.t() -> Runner.t())}
           | {:switch, selector :: (map() -> (Runner.t() -> Runner.t()))}
+          | {:recover, predicate :: ({step :: atom(), reason :: any(), changes_before :: map()} -> boolean()),
+             on_error :: (runner :: Runner.t(), {step :: atom(), reason :: any(), changes_before :: map()} ->
+                            Runner.t())}
 
   @typedoc """
   The runner struct.
@@ -356,6 +361,55 @@ defmodule ExEssentials.Core.Runner do
   end
 
   @doc """
+  Registers an error recovery handler.
+
+  By default, the runner is fail-fast: when a step returns `{:error, reason}` the flow stops immediately.
+  `recover/3` lets you *intercept* an error and inject new steps to continue the flow.
+
+  The recovery handler is evaluated **only when an error happens**.
+
+  * `predicate` receives `{step, reason, changes_before}` and must return `true` when the error should be recovered.
+  * `on_error` receives the current runner and the same `{step, reason, changes_before}` tuple and must return a runner
+    containing the steps to be injected.
+
+  When a recovery matches, the runner:
+
+    * skips steps until the matching `recover/3`
+    * injects the steps returned by `on_error`
+    * continues with the remaining steps after the matching `recover/3`
+
+  If no recovery matches, the runner returns the original error tuple.
+
+  ## Example
+
+      runner =
+        ExEssentials.Core.Runner.new()
+        |> ExEssentials.Core.Runner.run(:may_fail, fn _ -> {:error, {:http, 500}} end)
+        |> ExEssentials.Core.Runner.recover(
+          fn {_step, reason, _changes} -> match?({:http, 500}, reason) end,
+          fn r, {_step, reason, _changes} ->
+            ExEssentials.Core.Runner.run(r, :enqueue_retry, fn _ -> {:ok, {:scheduled, reason}} end)
+          end
+        )
+        |> ExEssentials.Core.Runner.run(:after, fn %{enqueue_retry: v} -> {:ok, v} end)
+
+      ExEssentials.Core.Runner.finish(runner)
+
+  """
+  @spec recover(
+          runner :: Runner.t(),
+          predicate :: ({step :: atom(), reason :: any(), changes_before :: map()} -> boolean()),
+          on_error :: (runner :: Runner.t(), {step :: atom(), reason :: any(), changes_before :: map()} -> Runner.t())
+        ) :: Runner.t()
+  def recover(runner = %Runner{failed?: true}, _predicate, _on_error), do: runner
+
+  def recover(runner = %Runner{steps: steps}, predicate, on_error)
+      when is_function(predicate, 1) and is_function(on_error, 2) do
+    steps = steps ++ [{:recover, predicate, on_error}]
+    %Runner{runner | steps: steps}
+  end
+
+  @doc """
   Executes the flow and returns the execution result.
 
   Returns:
@@ -414,28 +468,30 @@ defmodule ExEssentials.Core.Runner do
   defp execute_steps([step | rest], acc) do
     step
     |> reduce_step(acc)
-    |> handle_execute_step_result(rest)
+    |> handle_execute_step_result(rest, acc)
   end
 
-  defp handle_execute_step_result({:cont, acc2}, rest),
-    do: execute_steps(rest, acc2)
+  defp handle_execute_step_result({:cont, next_acc}, rest, _acc),
+    do: execute_steps(rest, next_acc)
 
-  defp handle_execute_step_result({:inject, injected_steps, acc2}, rest),
-    do: handle_execute_injection(injected_steps, acc2, rest)
+  defp handle_execute_step_result({:inject, injected_steps, next_acc}, rest, _acc),
+    do: handle_execute_injection(injected_steps, next_acc, rest)
 
-  defp handle_execute_step_result({:halt, error}, _rest),
-    do: error
+  defp handle_execute_step_result({:halt, {:error, step, reason, changes_before}}, rest, acc),
+    do: handle_recover_or_halt({step, reason, changes_before}, rest, acc)
 
-  defp handle_execute_injection(injected_steps, acc2, rest) do
+  defp handle_execute_injection(injected_steps, next_acc, rest) do
+    %Runner{changes: changes_before} = next_acc
+
     injected_steps
-    |> validate_injected_steps(rest, acc2.changes)
-    |> handle_injection_validation(injected_steps, acc2, rest)
+    |> validate_injected_steps(rest, changes_before)
+    |> handle_injection_validation(injected_steps, next_acc, rest)
   end
 
-  defp handle_injection_validation(:ok, injected_steps, acc2, rest),
-    do: execute_steps(injected_steps ++ rest, acc2)
+  defp handle_injection_validation(:ok, injected_steps, next_acc, rest),
+    do: execute_steps(injected_steps ++ rest, next_acc)
 
-  defp handle_injection_validation({:error, error}, _injected_steps, _acc2, _rest),
+  defp handle_injection_validation({:error, error}, _injected_steps, _next_acc, _rest),
     do: error
 
   defp reduce_step({:async, step_name, fun}, acc),
@@ -453,35 +509,95 @@ defmodule ExEssentials.Core.Runner do
   defp reduce_step({:switch, selector}, acc),
     do: handle_switch_step(acc, selector)
 
+  defp reduce_step({:recover, _predicate, _on_error}, acc),
+    do: {:cont, acc}
+
+  defp handle_recover_or_halt(err = {step, reason, changes_before}, remaining_steps, acc) do
+    remaining_steps
+    |> find_matching_recover(err)
+    |> handle_recover_match(err, step, reason, changes_before, remaining_steps, acc)
+  end
+
+  defp handle_recover_match(nil, {step, reason, changes_before}, step, reason, changes_before, _remaining_steps, _acc),
+    do: {:error, step, reason, changes_before}
+
+  defp handle_recover_match(recover_on_error, err, _step, _reason, changes_before, _remaining_steps, acc) do
+    %{timeout: timeout} = acc
+    {_predicate, on_error, steps_after_recover} = recover_on_error
+    injected_runner = build_recover_injected_runner(on_error, err, changes_before, timeout)
+    %Runner{steps: injected_steps} = injected_runner
+
+    injected_steps
+    |> validate_injected_steps(steps_after_recover, changes_before)
+    |> handle_recover_injection_validation(injected_runner, steps_after_recover, timeout)
+  end
+
+  defp build_recover_injected_runner(on_error, err, changes_before, timeout) do
+    build_injected_runner(%{changes: changes_before, timeout: timeout}, fn r ->
+      on_error.(r, err)
+    end)
+  end
+
+  defp handle_recover_injection_validation(:ok, injected_runner, steps_after_recover, timeout) do
+    execute_steps(
+      injected_runner.steps ++ steps_after_recover,
+      %{changes: injected_runner.changes, pending_async: [], timeout: timeout}
+    )
+  end
+
+  defp handle_recover_injection_validation({:error, error}, _injected_runner, _steps_after_recover, _timeout),
+    do: error
+
+  defp find_matching_recover(steps, err) do
+    steps
+    |> split_at_recover(err)
+    |> extract_recover_match()
+  end
+
+  defp split_at_recover(steps, err) do
+    Enum.split_while(steps, fn
+      {:recover, predicate, _on_error} -> not predicate.(err)
+      _other -> true
+    end)
+  end
+
+  defp extract_recover_match({_before, [{:recover, predicate, on_error} | rest_after_recover]}),
+    do: {predicate, on_error, rest_after_recover}
+
+  defp extract_recover_match(_), do: nil
+
   defp handle_branch_step(acc, predicate, on_true) do
     acc
     |> flush_pending_async()
     |> handle_branch_flush_result(predicate, on_true)
   end
 
-  defp handle_branch_flush_result({:ok, acc2}, predicate, on_true),
-    do: handle_branch_decision(predicate.(acc2.changes), acc2, on_true)
+  defp handle_branch_flush_result({:ok, next_acc}, predicate, on_true) do
+    %Runner{changes: changes_before} = next_acc
+    decision = predicate.(changes_before)
+    handle_branch_decision(decision, next_acc, on_true)
+  end
 
   defp handle_branch_flush_result({:error, step, reason, changes_before}, _predicate, _on_true),
     do: {:halt, {:error, step, reason, changes_before}}
 
-  defp handle_branch_decision(true, acc2, on_true),
-    do: inject_branch_steps(acc2, on_true)
+  defp handle_branch_decision(true, next_acc, on_true),
+    do: inject_branch_steps(next_acc, on_true)
 
-  defp handle_branch_decision(false, acc2, _on_true),
-    do: {:cont, acc2}
+  defp handle_branch_decision(false, next_acc, _on_true),
+    do: {:cont, next_acc}
 
-  defp inject_branch_steps(acc2, on_true) do
-    injected_runner = build_injected_runner(acc2, on_true)
-    {:inject, injected_runner.steps, %{acc2 | changes: injected_runner.changes}}
+  defp inject_branch_steps(next_acc, on_true) do
+    %Runner{steps: injected_steps, changes: injected_changes} = build_injected_runner(next_acc, on_true)
+    {:inject, injected_steps, %{next_acc | changes: injected_changes}}
   end
 
   defp handle_switch_step(acc, selector) do
     case flush_pending_async(acc) do
-      {:ok, acc2} ->
-        continuation = selector.(acc2.changes)
-        injected_runner = build_injected_runner(acc2, continuation)
-        {:inject, injected_runner.steps, %{acc2 | changes: injected_runner.changes}}
+      {:ok, next_acc} ->
+        continuation = selector.(next_acc.changes)
+        %Runner{steps: injected_steps, changes: injected_changes} = build_injected_runner(next_acc, continuation)
+        {:inject, injected_steps, %{next_acc | changes: injected_changes}}
 
       {:error, step, reason, changes_before} ->
         {:halt, {:error, step, reason, changes_before}}
@@ -503,15 +619,15 @@ defmodule ExEssentials.Core.Runner do
 
   defp handle_put_step(acc, step_name, value) do
     case flush_pending_async(acc) do
-      {:ok, acc2} -> {:cont, put_change(acc2, step_name, value)}
+      {:ok, next_acc} -> {:cont, put_change(next_acc, step_name, value)}
       {:error, step, reason, changes_before} -> {:halt, {:error, step, reason, changes_before}}
     end
   end
 
   defp handle_sync_step(acc, step_name, fun) do
-    with {:ok, acc2} <- flush_pending_async(acc),
-         {:ok, changes2} <- run_sync_step(acc2.changes, step_name, fun) do
-      {:cont, %{acc2 | changes: changes2}}
+    with {:ok, next_acc} <- flush_pending_async(acc),
+         {:ok, changes2} <- run_sync_step(next_acc.changes, step_name, fun) do
+      {:cont, %{next_acc | changes: changes2}}
     else
       {:error, step, reason, changes_before} ->
         {:halt, {:error, step, reason, changes_before}}
@@ -523,7 +639,7 @@ defmodule ExEssentials.Core.Runner do
 
   defp finalize_flow(acc) do
     case flush_pending_async(acc) do
-      {:ok, acc2} -> {:ok, acc2.changes}
+      {:ok, next_acc} -> {:ok, next_acc.changes}
       {:error, step, reason, changes_before} -> {:error, step, reason, changes_before}
     end
   end
