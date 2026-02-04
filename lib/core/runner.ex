@@ -481,7 +481,7 @@ defmodule ExEssentials.Core.Runner do
     do: handle_recover_or_halt({step, reason, changes_before}, rest, acc)
 
   defp handle_execute_injection(injected_steps, next_acc, rest) do
-    %Runner{changes: changes_before} = next_acc
+    %{changes: changes_before} = next_acc
 
     injected_steps
     |> validate_injected_steps(rest, changes_before)
@@ -573,7 +573,7 @@ defmodule ExEssentials.Core.Runner do
   end
 
   defp handle_branch_flush_result({:ok, next_acc}, predicate, on_true) do
-    %Runner{changes: changes_before} = next_acc
+    %{changes: changes_before} = next_acc
     decision = predicate.(changes_before)
     handle_branch_decision(decision, next_acc, on_true)
   end
