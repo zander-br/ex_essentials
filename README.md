@@ -22,6 +22,7 @@ Designed with a focus on productivity and organization, it helps you write clean
 ## Features
 
 - 🛠 **Flow Builder (Runner)**: Model complex business logic as a sequence of named steps (sync or async) with built-in error recovery.
+- 🔑 **Fingerprinting**: Generate deterministic SHA-256 hashes and compare maps or structs by selected keys.
 - 🇧🇷 **Brazilian Document Validation**: Robust CPF and CNPJ (numeric & alphanumeric) validation and formatting.
 - 🌐 **Web & API Helpers**: RFC 7807 compliant request validation, query parameter normalization, and service toggling.
 - 📑 **XML Utilities**: Safe and sanitized XML building built on top of Saxy.
@@ -36,7 +37,7 @@ The package can be installed by adding `ex_essentials` to your list of dependenc
 ```elixir
 def deps do
   [
-    {:ex_essentials, "~> 0.10.1"}
+    {:ex_essentials, "~> 0.11.0"}
   ]
 end
 ```
@@ -65,6 +66,26 @@ case Runner.finish(runner) do
   {:error, step, reason, changes_before} ->
     IO.inspect({step, reason}, label: "Flow failed")
 end
+```
+
+### 🔑 Fingerprint Utilities
+
+Generate SHA-256 fingerprint hashes and compare maps or structs based on a subset of keys.
+
+```elixir
+alias ExEssentials.Core.Fingerprint
+
+# Generate hash for selected fields
+user = %{id: 1, name: "Alice", email: "alice@example.com"}
+Fingerprint.hash(user, [:id, :email])
+# => "..."
+
+# Compare two maps or structs by selected keys
+user_a = %{id: 1, name: "Alice", role: :admin}
+user_b = %{id: 1, name: "Alice", role: :user}
+
+Fingerprint.equal?(user_a, user_b, [:id, :name]) # => true
+Fingerprint.equal?(user_a, user_b, [:id, :role]) # => false
 ```
 
 ### 🇧🇷 Brazilian Document Validation
